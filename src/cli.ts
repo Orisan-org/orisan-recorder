@@ -8,6 +8,9 @@
 
 import { generateDemoSession } from './demo.js';
 import { scan, serverCount } from './discover.js';
+import { attach, detach, discardBackup } from './attach.js';
+import { fileURLToPath } from 'node:url';
+import { dirname as pathDirname, join as pathJoin } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { EventIndex } from './index-db.js';
 import { EventStore } from './store.js';
@@ -22,6 +25,8 @@ function usage(): string {
     '',
     'Usage:',
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
+    '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
+    '  orisan-rec detach <config>                restore the original config exactly',
     '  orisan-rec demo <dir>                     write a fabricated 40-event session',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
@@ -33,6 +38,13 @@ function usage(): string {
     'A cannot-verify result is never a pass.',
     '',
   ].join('\n');
+}
+
+/** Absolute path to the shim entry point, resolved from this module. */
+function shimEntryPoint(): string {
+  const here = pathDirname(fileURLToPath(import.meta.url));
+  // Works from src (tsx) and from dist (built).
+  return pathJoin(here, here.endsWith('src') ? 'shim-main.ts' : 'shim-main.js');
 }
 
 function flag(argv: string[], name: string): string | undefined {
@@ -72,6 +84,50 @@ async function main(argv: string[]): Promise<number> {
     if (out !== undefined) process.stdout.write(`\n  wrote ${out}\n`);
     // Discovery finding nothing is a legitimate answer, not an error.
     return 0;
+  }
+
+  if (cmd === 'attach') {
+    const config = argv[1];
+    const log = flag(argv, '--log');
+    if (!config || !log) {
+      process.stderr.write('attach requires <config> and --log <dir>\n');
+      return 2;
+    }
+    try {
+      const r = attach(config, {
+        logDir: log,
+        shimPath: shimEntryPoint(),
+        ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+        ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
+      });
+      process.stdout.write(
+        `attached ${r.configPath}\n` +
+        `  backup   ${r.backupPath}\n` +
+        `  recording ${r.rewritten.length ? r.rewritten.join(', ') : '(none)'}\n` +
+        (r.skipped.length ? `  skipped  ${r.skipped.join(', ')} (no stdio command)\n` : '') +
+        '  restart the client for this to take effect\n',
+      );
+      return 0;
+    } catch (e) {
+      process.stderr.write(`attach failed: ${(e as Error).message}\n`);
+      return 2;
+    }
+  }
+
+  if (cmd === 'detach') {
+    const config = argv[1];
+    if (!config) { process.stderr.write('detach requires <config>\n'); return 2; }
+    try {
+      const r = detach(config);
+      if (flag(argv, '--keep-backup') === undefined) discardBackup(config);
+      process.stdout.write(
+        `detached ${r.configPath}\n  restored byte-identical from ${r.restoredFrom}\n`,
+      );
+      return 0;
+    } catch (e) {
+      process.stderr.write(`detach failed: ${(e as Error).message}\n`);
+      return 2;
+    }
   }
 
   if (!dir) {
