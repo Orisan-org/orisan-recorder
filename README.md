@@ -34,22 +34,43 @@ command it ran, so a reviewer trusts no code of ours for that step.
 | R1.1 | Versioned event schema + hash chain | done |
 | R1.2 | Append-only store, SQLite index, encrypted payloads | done |
 | R1.5 | Fake session generator (`demo`) | done |
-| R1.3 | Signed checkpoints + RFC 3161 anchoring | **not started** (Tier C) |
-| R1.4 | `verify` command | **not started** (Tier C) |
+| R1.3 | Signed checkpoints + RFC 3161 anchoring | done (Tier C) |
+| R1.4 | `verify` command | done (Tier C) |
 | R2 | Discovery, attach/detach, local UI | not started |
 
-Because R1.3/R1.4 are not built, the acceptance tests that depend on them — the
-recompute attack and the TSA-unreachable case — are present as skipped placeholders,
-not as passes. See `test/attacker.test.ts`.
+All R1 acceptance tests pass, including the two that matter most, in
+`test/attacker.test.ts`: the recompute attack (delete events, re-seal the whole
+chain with our own hash function — `verify` exits 1 and names the checkpoint) and
+the TSA-unreachable case (recording continues, the checkpoint queues, `verify`
+exits 2 and never reports clean).
+
+Verified end to end against the live freetsa.org: `verify --tsa-ca` returns CLEAN
+(exit 0) on an intact log, and TAMPERED (exit 1) on the same log after the attack,
+while chain-only checking still reports it intact.
 
 ## Layout
 
-    src/schema.ts    R1.1  event shape, canonical JSON, chain hashing
-    src/store.ts     R1.2  append-only segments, fsync, crash recovery
-    src/index-db.ts  R1.2  SQLite index (a cache; the JSONL is the truth)
-    src/payloads.ts  R1.2  encrypted payload blobs  [Tier C — needs review]
-    src/demo.ts      R1.5  fake session generator
-    src/cli.ts             minimal CLI surface
+    src/schema.ts     R1.1  event shape, canonical JSON, chain hashing
+    src/store.ts      R1.2  append-only segments, fsync, crash recovery
+    src/index-db.ts   R1.2  SQLite index (a cache; the JSONL is the truth)
+    src/payloads.ts   R1.2  sodium crypto_box_seal payload blobs   [Tier C]
+    src/merkle.ts     R1.3  RFC 6962 Merkle tree
+    src/checkpoint.ts R1.3  Ed25519-signed checkpoints             [Tier C]
+    src/der.ts        R1.3  minimal DER for RFC 3161
+    src/tsa.ts        R1.3  timestamp anchoring + offline queue     [Tier C]
+    src/recorder.ts   R1.3  store + checkpoint cadence
+    src/verify.ts     R1.4  the verify command                      [Tier C]
+    src/demo.ts       R1.5  fake session generator
+    src/cli.ts              CLI surface
+
+## verify exit codes
+
+    0  clean          every check ran and passed
+    1  tampered       a break, a bad signature, or a violated anchored root
+    2  cannot-verify  a check could not be completed — NEVER a pass
+
+Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine".
+A missing anchor, a missing public key, or an openssl that will not run all yield 2.
 
 ## Development
 

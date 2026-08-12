@@ -97,11 +97,22 @@ describe('cli', () => {
     expect(run(['chain', dir]).out).toMatch(/cannot detect a chain recomputed/);
   });
 
-  it('ACCEPTANCE: verify is absent and exits 2 (cannot-verify), never 0', () => {
+  it('ACCEPTANCE: a demo session has no checkpoints, so verify exits 2, never 0', () => {
     run(['demo', dir]);
     const r = run(['verify', dir]);
     expect(r.code).toBe(2);
-    expect(r.err).toMatch(/not implemented yet \(R1\.4\)/);
-    expect(r.err).not.toMatch(/\bverified\b/i);
+    expect(r.err).toMatch(/CANNOT VERIFY/);
+    expect(r.err).toMatch(/no_checkpoints/);
+    expect(r.err).toMatch(/NOT a pass/);
+    // The reassuring word must not appear anywhere in a non-clean report.
+    expect(r.err).not.toMatch(/\bCLEAN\b/);
+  });
+
+  it('checkpoint then verify without an anchor is still cannot-verify', () => {
+    run(['demo', dir]);
+    expect(run(['checkpoint', dir]).code).toBe(0);
+    const r = run(['verify', dir]);
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/checkpoint_unanchored/);
   });
 });
