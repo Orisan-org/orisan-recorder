@@ -27,6 +27,8 @@ export class Recorder {
   private readonly anchorOpts: AnchorOptions & { enabled: boolean };
   /** seq of the last event already covered by a checkpoint. */
   private lastCheckpointedSeq: number;
+  /** The tail of the checkpoint chain, so the next one can link to it. */
+  private lastCheckpoint: SignedCheckpoint | null;
 
   private constructor(dir: string, store: EventStore, key: SigningKeyFile, opts: RecorderOptions) {
     this.dir = dir;
@@ -37,7 +39,8 @@ export class Recorder {
     this.anchorOpts = { enabled: true, ...(opts.anchor ?? {}) };
 
     const cps = readCheckpoints(dir);
-    this.lastCheckpointedSeq = cps.length ? Math.max(...cps.map((c) => c.seq_to)) : -1;
+    this.lastCheckpoint = cps.length ? cps[cps.length - 1]! : null;
+    this.lastCheckpointedSeq = this.lastCheckpoint ? this.lastCheckpoint.seq_to : -1;
   }
 
   static open(dir: string, opts: RecorderOptions = {}): Recorder {
@@ -64,8 +67,9 @@ export class Recorder {
     const events = this.store.readAll().filter((e) => e.seq >= from);
     if (events.length === 0) return null;
 
-    const cp = buildCheckpoint(events.map((e) => e.hash), from, reason, this.key);
+    const cp = buildCheckpoint(events.map((e) => e.hash), from, reason, this.key, this.lastCheckpoint);
     appendCheckpoint(this.dir, cp);
+    this.lastCheckpoint = cp;
     this.lastCheckpointedSeq = cp.seq_to;
 
     if (this.anchorOpts.enabled) {

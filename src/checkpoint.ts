@@ -45,9 +45,24 @@ export const PUBLIC_KEY_FILENAME = 'signing.pub.pem';
 /** Default cadence from the spec. */
 export const DEFAULT_CHECKPOINT_INTERVAL = 500;
 
-/** The signed part of a checkpoint. Exactly these fields, canonically encoded. */
+/** Genesis value for the checkpoint chain's own prev pointer. */
+export const CHECKPOINT_GENESIS_PREV = '0'.repeat(64);
+
+/**
+ * The signed part of a checkpoint. Exactly these fields, canonically encoded.
+ *
+ * v2 added `index` and `prev_checkpoint_hash`, which make the checkpoint log a
+ * chain in its own right. Without them verify could only validate the
+ * checkpoints that happened to be present, and nothing established what should
+ * be present — so deleting the newest checkpoint moved the log's own idea of
+ * its end backwards, and a whole tail could be erased with three rm's.
+ */
 export interface CheckpointBody {
-  v: 1;
+  v: 2;
+  /** Monotonic from 0. A gap means a checkpoint was removed. */
+  index: number;
+  /** sha256 over the previous checkpoint's canonical body+signature. */
+  prev_checkpoint_hash: string;
   seq_from: number;
   seq_to: number;
   count: number;
@@ -123,6 +138,16 @@ export function checkpointBody(cp: SignedCheckpoint | CheckpointBody): Checkpoin
   return body;
 }
 
+/**
+ * The link value a successor stores in prev_checkpoint_hash.
+ *
+ * Covers body AND signature — identical to anchorDigest's input — so a
+ * checkpoint cannot be re-signed without breaking every link after it.
+ */
+export function checkpointLinkHash(cp: SignedCheckpoint): string {
+  return anchorDigest(cp).toString('hex');
+}
+
 export function signCheckpoint(body: CheckpointBody, kf: SigningKeyFile): SignedCheckpoint {
   const sig = edSign(null, Buffer.from(canonicalJson(body), 'utf8'), privateKeyOf(kf));
   return { ...body, signature: sig.toString('base64') };
@@ -163,11 +188,14 @@ export function buildCheckpoint(
   seqFrom: number,
   reason: CheckpointBody['reason'],
   kf: SigningKeyFile,
+  prev: SignedCheckpoint | null = null,
   now: Date = new Date(),
 ): SignedCheckpoint {
   if (eventHashes.length === 0) throw new Error('refusing to checkpoint an empty range');
   const body: CheckpointBody = {
-    v: 1,
+    v: 2,
+    index: prev ? prev.index + 1 : 0,
+    prev_checkpoint_hash: prev ? checkpointLinkHash(prev) : CHECKPOINT_GENESIS_PREV,
     seq_from: seqFrom,
     seq_to: seqFrom + eventHashes.length - 1,
     count: eventHashes.length,
@@ -177,6 +205,90 @@ export function buildCheckpoint(
     reason,
   };
   return signCheckpoint(body, kf);
+}
+
+export interface CheckpointChainBreak {
+  index: number;
+  seq_to: number;
+  reason:
+    | 'index_gap'
+    | 'prev_hash_mismatch'
+    | 'first_index_not_zero'
+    | 'first_seq_not_zero'
+    | 'seq_not_contiguous'
+    | 'empty_count'
+    | 'inverted_range'
+    | 'count_mismatch'
+    | 'duplicate_index'
+    | 'unsupported_version';
+  message: string;
+}
+
+/**
+ * Structural validation of the checkpoint log as a chain.
+ *
+ * This is what closes tail truncation, holes, and the count:0 poison pill: it
+ * checks the checkpoints tile the event log from seq 0 with no gaps, rather
+ * than validating whatever the operator chose to leave on disk.
+ */
+export function verifyCheckpointChain(checkpoints: readonly SignedCheckpoint[]): CheckpointChainBreak[] {
+  const breaks: CheckpointChainBreak[] = [];
+  if (checkpoints.length === 0) return breaks;
+
+  const seenIndex = new Set<number>();
+  let prev: SignedCheckpoint | null = null;
+
+  for (const cp of checkpoints) {
+    const at = { index: cp.index, seq_to: cp.seq_to };
+
+    if (cp.v !== 2) {
+      breaks.push({ ...at, reason: 'unsupported_version', message: `checkpoint version ${String(cp.v)} is not supported` });
+      continue;
+    }
+    if (seenIndex.has(cp.index)) {
+      breaks.push({ ...at, reason: 'duplicate_index', message: `checkpoint index ${cp.index} appears more than once` });
+      continue;
+    }
+    seenIndex.add(cp.index);
+
+    // count:0 with a huge range was a permanent integrity kill switch: it
+    // satisfied the Merkle check vacuously and pushed the "last anchored seq"
+    // past every future event. An empty checkpoint is never legitimate.
+    if (cp.count < 1) {
+      breaks.push({ ...at, reason: 'empty_count', message: `checkpoint ${cp.index} claims count ${cp.count}; a checkpoint must cover at least one event` });
+    }
+    if (cp.seq_to < cp.seq_from) {
+      breaks.push({ ...at, reason: 'inverted_range', message: `checkpoint ${cp.index} has seq_to ${cp.seq_to} < seq_from ${cp.seq_from}` });
+    }
+    if (cp.count >= 1 && cp.seq_to - cp.seq_from + 1 !== cp.count) {
+      breaks.push({ ...at, reason: 'count_mismatch', message: `checkpoint ${cp.index} spans ${cp.seq_to - cp.seq_from + 1} seqs but claims count ${cp.count}` });
+    }
+
+    if (prev === null) {
+      if (cp.index !== 0) {
+        breaks.push({ ...at, reason: 'first_index_not_zero', message: `checkpoint log starts at index ${cp.index}; checkpoint 0 is missing` });
+      }
+      if (cp.seq_from !== 0) {
+        breaks.push({ ...at, reason: 'first_seq_not_zero', message: `first checkpoint starts at seq ${cp.seq_from}, not 0; earlier events are uncommitted` });
+      }
+      if (cp.prev_checkpoint_hash !== CHECKPOINT_GENESIS_PREV) {
+        breaks.push({ ...at, reason: 'prev_hash_mismatch', message: `first checkpoint does not carry the genesis prev hash` });
+      }
+    } else {
+      if (cp.index !== prev.index + 1) {
+        breaks.push({ ...at, reason: 'index_gap', message: `checkpoint index jumps from ${prev.index} to ${cp.index}; ${cp.index - prev.index - 1} checkpoint(s) removed` });
+      }
+      const expected = checkpointLinkHash(prev);
+      if (cp.prev_checkpoint_hash !== expected) {
+        breaks.push({ ...at, reason: 'prev_hash_mismatch', message: `checkpoint ${cp.index} links to ${cp.prev_checkpoint_hash.slice(0, 16)}… but its predecessor hashes to ${expected.slice(0, 16)}…` });
+      }
+      if (cp.seq_from !== prev.seq_to + 1) {
+        breaks.push({ ...at, reason: 'seq_not_contiguous', message: `checkpoint ${cp.index} starts at seq ${cp.seq_from} but the previous ended at ${prev.seq_to}; seqs ${prev.seq_to + 1}..${cp.seq_from - 1} are uncommitted` });
+      }
+    }
+    prev = cp;
+  }
+  return breaks;
 }
 
 /** Append a checkpoint durably. The checkpoint log is append-only like the events. */

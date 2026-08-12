@@ -29,6 +29,7 @@ import {
   PUBLIC_KEY_FILENAME,
   anchorDigest,
   readCheckpoints,
+  verifyCheckpointChain,
   verifyCheckpointSignature,
   type SignedCheckpoint,
 } from './checkpoint.js';
@@ -151,6 +152,18 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
   const checkpoints = readCheckpoints(dir);
   const pubPath = join(dir, PUBLIC_KEY_FILENAME);
   const pubPem = existsSync(pubPath) ? readFileSync(pubPath, 'utf8') : null;
+
+  // 2a. The checkpoint log must itself be an unbroken chain covering the events
+  //     from seq 0. Validating only what is present was the single root cause
+  //     of four of the five confirmed exit-0 exploits.
+  for (const b of verifyCheckpointChain(checkpoints)) {
+    findings.push({
+      severity: 'tampered',
+      code: `checkpoint_chain_${b.reason}`,
+      checkpoint_seq_to: b.seq_to,
+      message: b.message,
+    });
+  }
 
   if (checkpoints.length === 0) {
     findings.push({
@@ -282,19 +295,40 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
     if (f) findings.push(f);
   }
 
-  // Events beyond the last anchored checkpoint are, by definition, not yet
-  // externally committed. Say so rather than implying the whole log is proven.
+  // ---- 5. head coverage ---------------------------------------------------
+  // The highest anchored seq_to is compared against the ACTUAL head of the
+  // event log. Previously this only produced a warning, and the "last anchored
+  // seq" was derived from whatever checkpoints survived — so deleting the
+  // newest checkpoint together with the events it covered moved the goalposts
+  // and the truncation became invisible. Both halves are now failures.
   const lastAnchoredSeq = anchoredCheckpoints.length
     ? Math.max(...anchoredCheckpoints.map((c) => c.seq_to))
     : -1;
-  const uncommitted = events.filter((e) => e.seq > lastAnchoredSeq).length;
-  if (uncommitted > 0 && events.length > 0) {
+  const headSeq = events.length > 0 ? events[events.length - 1]!.seq : -1;
+
+  if (headSeq > lastAnchoredSeq) {
+    const uncommitted = events.filter((e) => e.seq > lastAnchoredSeq).length;
+    // cannot_verify, not tampered: events accumulate past the last checkpoint
+    // during normal recording, before the cadence fires. Calling that
+    // tampering would flag every live log and every `demo` run. It is still
+    // never clean — those events are committed to by nothing.
     findings.push({
       severity: 'cannot_verify',
       code: 'events_past_last_anchor',
       message:
-        `${uncommitted} event(s) after seq ${lastAnchoredSeq} are not covered by any anchored ` +
-        'checkpoint; integrity for those rests on the chain alone',
+        `${uncommitted} event(s) after seq ${lastAnchoredSeq} are covered by no anchored ` +
+        `checkpoint (log head is seq ${headSeq}); they are uncommitted`,
+    });
+  } else if (lastAnchoredSeq > headSeq) {
+    // A checkpoint commits to events that are no longer there at all.
+    const culprit = anchoredCheckpoints.find((c) => c.seq_to === lastAnchoredSeq);
+    findings.push({
+      severity: 'tampered',
+      code: 'log_truncated_below_anchor',
+      ...(culprit ? { checkpoint_seq_to: culprit.seq_to } : {}),
+      message:
+        `an anchored checkpoint commits up to seq ${lastAnchoredSeq} but the log head is ` +
+        `seq ${headSeq}; ${lastAnchoredSeq - headSeq} event(s) were removed from the tail`,
     });
   }
 
