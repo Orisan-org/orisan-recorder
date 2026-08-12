@@ -35,15 +35,38 @@ import {
 } from './checkpoint.js';
 import { merkleRoot } from './merkle.js';
 import { EventStore } from './store.js';
-import { anchorPaths, readAnchor } from './tsa.js';
+import { anchorPaths, readAnchor, readAttestedTime } from './tsa.js';
 import { highestWitnessedIndex, readWitness, verifyAgainstWitness } from './witness.js';
 import { computeEventHash, type RecordedEvent } from './schema.js';
+
+/** Newest event timestamp inside a checkpoint's range, or null if none present. */
+function newestEventTimeIn(events: readonly RecordedEvent[], cp: SignedCheckpoint): Date | null {
+  let newest: number | null = null;
+  for (const e of events) {
+    if (e.seq < cp.seq_from || e.seq > cp.seq_to) continue;
+    const t = Date.parse(e.ts);
+    if (Number.isNaN(t)) continue;
+    if (newest === null || t > newest) newest = t;
+  }
+  return newest === null ? null : new Date(newest);
+}
 
 /** An event minus its stored hash, ready for recomputation. */
 function stripHash(e: RecordedEvent): Omit<RecordedEvent, 'hash'> {
   const { hash: _drop, ...rest } = e;
   return rest;
 }
+
+/**
+ * How long after the newest event it covers an anchor may be attested.
+ *
+ * An anchor is meant to say "this happened before T". If the operator can
+ * delete history and re-anchor it today, the timestamp attests only to the
+ * rewrite. A window is needed because anchoring is not instantaneous and may
+ * be drained from an offline queue, but it must be short enough that
+ * back-dating a session is not free.
+ */
+export const ANCHOR_FRESHNESS_MS = 60 * 60 * 1000;
 
 export const EXIT_CLEAN = 0;
 export const EXIT_TAMPERED = 1;
@@ -69,6 +92,8 @@ export interface VerifyReport {
   findings: Finding[];
   /** openssl invocations run, verbatim, so a reviewer can repeat them. */
   opensslCommands: string[];
+  /** Attested time per checkpoint seq_to, as read from the token. */
+  attestedTimes: { checkpoint_seq_to: number; attested_at: string }[];
 }
 
 export interface VerifyOptions {
@@ -210,6 +235,7 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
 
   // ---- 3. external anchors ------------------------------------------------
   let anchored = 0;
+  const attestedTimes = new Map<number, Date>();
   for (const cp of checkpoints) {
     const rec = readAnchor(dir, cp.seq_to);
     const paths = anchorPaths(dir, cp.seq_to);
@@ -276,6 +302,39 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
       // We do not parse this output for a verdict beyond exit status: openssl
       // succeeding IS the verdict. Nothing here re-implements the check.
       execFileSync(openssl, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      // The signature is good; now ask what time it claims. Only meaningful
+      // after the signature check, which is why it lives here and not earlier.
+      const attested = readAttestedTime(openssl, paths.tsr);
+      if (attested === null) {
+        findings.push({
+          severity: 'cannot_verify',
+          code: 'anchor_time_unreadable',
+          checkpoint_seq_to: cp.seq_to,
+          message: `could not read the attested time from the token for checkpoint ${cp.seq_to}`,
+        });
+        continue;
+      }
+      attestedTimes.set(cp.seq_to, attested);
+
+      const newestEventTs = newestEventTimeIn(events, cp);
+      if (newestEventTs !== null) {
+        const skewMs = attested.getTime() - newestEventTs.getTime();
+        if (skewMs > ANCHOR_FRESHNESS_MS) {
+          findings.push({
+            severity: 'tampered',
+            code: 'anchor_too_late',
+            checkpoint_seq_to: cp.seq_to,
+            message:
+              `checkpoint ${cp.seq_from}..${cp.seq_to} covers events up to ` +
+              `${newestEventTs.toISOString()} but was timestamped ${attested.toISOString()}, ` +
+              `${Math.round(skewMs / 60000)} minutes later (limit ` +
+              `${Math.round(ANCHOR_FRESHNESS_MS / 60000)}); the anchor attests to a re-anchoring, ` +
+              'not to when the events happened',
+          });
+          continue;
+        }
+      }
       anchored++;
     } catch (e) {
       const err = e as { status?: number | null; code?: string; stderr?: Buffer };
@@ -409,6 +468,9 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
     anchored,
     findings,
     opensslCommands,
+    attestedTimes: [...attestedTimes.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([seq, at]) => ({ checkpoint_seq_to: seq, attested_at: at.toISOString() })),
   };
 }
 
@@ -423,6 +485,15 @@ export function formatReport(r: VerifyReport, dir: string): string {
     lines.push('  timestamp checks were delegated to openssl — re-run these yourself:');
     for (const c of r.opensslCommands) lines.push(`    ${c}`);
     lines.push('');
+    if (r.attestedTimes.length > 0) {
+      // "Verification: OK" alone hides a re-anchoring. A human re-running the
+      // command above should be told what time to expect.
+      lines.push('  attested times (openssl ts -reply -in <tsr> -text):');
+      for (const a of r.attestedTimes) {
+        lines.push(`    checkpoint ..${a.checkpoint_seq_to}  ${a.attested_at}`);
+      }
+      lines.push('');
+    }
   }
 
   if (r.findings.length > 0) {

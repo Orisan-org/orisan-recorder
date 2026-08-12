@@ -21,7 +21,7 @@ import {
 } from '../src/checkpoint.js';
 import { merkleRoot } from '../src/merkle.js';
 import { anchorCheckpoint } from '../src/tsa.js';
-import { EXIT_CLEAN, EXIT_TAMPERED, verify } from '../src/verify.js';
+import { EXIT_CANNOT_VERIFY, EXIT_CLEAN, EXIT_TAMPERED, verify } from '../src/verify.js';
 import { startLocalTsa, type LocalTsa } from './fixtures/tsa-fixture.js';
 
 let tsa: LocalTsa;
@@ -240,5 +240,58 @@ describe('Merkle leaves are recomputed from content', () => {
     const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
     expect(r.exitCode).toBe(EXIT_TAMPERED);
     expect(r.findings.some((f) => f.code === 'checkpoint_root_mismatch')).toBe(true);
+  });
+});
+
+describe('attested time (Job 5) — catches re-anchoring even with no witness', () => {
+  /** Events dated three hours ago, so a fresh anchor is outside the window. */
+  async function backdatedLog(): Promise<void> {
+    const base = Date.now() - 3 * 60 * 60 * 1000;
+    const rec = Recorder.open(dir, {
+      checkpointInterval: 10, fsync: false, anchor: { ...tsa.anchorOptions },
+    });
+    for (let i = 0; i < 10; i++) {
+      await rec.record({ ...ev(i), ts: new Date(base + i * 1000).toISOString() });
+    }
+    await rec.end();
+  }
+
+  it('an anchor timestamped long after the events it covers is tampering', async () => {
+    await backdatedLog();
+    // No witness supplied: this must still be caught, on time alone.
+    const r = verify(dir, { tsaCaFile: tsa.caFile });
+    expect(r.findings.some((f) => f.code === 'anchor_too_late')).toBe(true);
+    expect(r.verdict).toBe('tampered');
+    expect(r.exitCode).toBe(EXIT_TAMPERED);
+  });
+
+  it('an honest log anchored immediately is inside the window', async () => {
+    await honestLog(10, 10);
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.findings.some((f) => f.code === 'anchor_too_late')).toBe(false);
+    expect(r.verdict).toBe('clean');
+  });
+
+  it('the report shows the attested time, not just "Verification: OK"', async () => {
+    await honestLog(10, 10);
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.attestedTimes).toHaveLength(1);
+    expect(r.attestedTimes[0]!.attested_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    const { formatReport } = await import('../src/verify.js');
+    expect(formatReport(r, dir)).toMatch(/attested times/);
+  });
+
+  it('an unanchored (queued) checkpoint is cannot-verify, never tampered', async () => {
+    const offline = { fetchImpl: async () => { throw new Error('ENOTFOUND'); } };
+    const rec = Recorder.open(dir, {
+      checkpointInterval: 5, fsync: false, anchor: { ...offline }, witnessFile,
+    });
+    for (let i = 0; i < 10; i++) await rec.record(ev(i));
+    await rec.end();
+
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.verdict).toBe('cannot_verify');
+    expect(r.exitCode).toBe(EXIT_CANNOT_VERIFY);
+    expect(r.findings.some((f) => f.code === 'checkpoint_unanchored')).toBe(true);
   });
 });

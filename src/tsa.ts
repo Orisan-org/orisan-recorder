@@ -20,6 +20,7 @@
  * rather than clean. A missing anchor is a visible state, never a silent one.
  */
 
+import { execFileSync } from 'node:child_process';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -235,4 +236,30 @@ export async function drainAnchorQueue(
     results.push(await anchorCheckpoint(dir, cp, opts));
   }
   return results;
+}
+
+/**
+ * Read the attested time out of a stored TimeStampResp, via openssl.
+ *
+ * We do not parse CMS ourselves and we do not validate the TSA's signature —
+ * that stays with `openssl ts -verify`. This reads the claimed genTime so the
+ * verifier can apply a freshness policy and so a human sees the time rather
+ * than a bare "Verification: OK". A claimed time is only worth anything once
+ * the signature check has passed; callers must run both.
+ */
+export function readAttestedTime(opensslPath: string, tsrPath: string): Date | null {
+  let out: string;
+  try {
+    out = execFileSync(opensslPath, ['ts', '-reply', '-in', tsrPath, '-text'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    return null;
+  }
+  // e.g. "Time stamp: Aug 12 16:52:16 2026 GMT"
+  const m = /^\s*Time stamp:\s*(.+)$/m.exec(out);
+  if (!m) return null;
+  const parsed = new Date(`${m[1]!.trim()}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
