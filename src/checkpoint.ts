@@ -33,7 +33,7 @@ import {
   chmodSync, closeSync, existsSync, fsyncSync, mkdirSync,
   openSync, readFileSync, statSync, writeFileSync, writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import { canonicalJson } from './schema.js';
 import { merkleRoot } from './merkle.js';
@@ -94,8 +94,35 @@ export function keyIdOf(publicKey: KeyObject): string {
 }
 
 /** Create a signing key and write it owner-only, plus the public key beside it. */
-export function generateSigningKey(dir: string): SigningKeyFile {
+/**
+ * Where the signing key should live.
+ *
+ * Default was inside the log directory, which made "the attacker holds the
+ * key" the default configuration rather than an edge case: anyone who can
+ * rewrite the events can re-sign the checkpoints over them. Callers should
+ * pass an explicit path outside the log.
+ */
+export function signingKeyPath(dir: string, explicitPath?: string): string {
+  return explicitPath ?? join(dir, SIGNING_KEY_FILENAME);
+}
+
+/** True when the key sits beside the data it authenticates. */
+export function keyIsBesideData(dir: string, keyPath: string): boolean {
+  return resolve(keyPath).startsWith(resolve(dir) + sep);
+}
+
+/**
+ * Create a signing key.
+ *
+ * The PRIVATE key goes to `keyPath`, which should be OUTSIDE `logDir`. The
+ * PUBLIC key always stays in the log directory: verification must never
+ * require anything the operator could withhold.
+ */
+export function generateSigningKey(logDir: string, keyPath?: string): SigningKeyFile {
+  const dir = logDir;
+  const path = signingKeyPath(dir, keyPath);
   mkdirSync(dir, { recursive: true });
+  mkdirSync(dirname(resolve(path)), { recursive: true });
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const kf: SigningKeyFile = {
     v: 1,
@@ -104,7 +131,6 @@ export function generateSigningKey(dir: string): SigningKeyFile {
     private_key: privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
     public_key_pem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
   };
-  const path = join(dir, SIGNING_KEY_FILENAME);
   writeFileSync(path, `${JSON.stringify(kf, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   // The public key is written unencumbered on purpose: verification must never
@@ -113,8 +139,8 @@ export function generateSigningKey(dir: string): SigningKeyFile {
   return kf;
 }
 
-export function loadSigningKey(dir: string): SigningKeyFile {
-  const path = join(dir, SIGNING_KEY_FILENAME);
+export function loadSigningKey(logDir: string, keyPath?: string): SigningKeyFile {
+  const path = signingKeyPath(logDir, keyPath);
   if (!existsSync(path)) throw new Error(`signing key not found: ${path}`);
   if (process.platform !== 'win32') {
     const mode = statSync(path).mode & 0o777;
@@ -308,8 +334,21 @@ export function appendCheckpoint(dir: string, cp: SignedCheckpoint): void {
 export function readCheckpoints(dir: string): SignedCheckpoint[] {
   const path = join(dir, CHECKPOINTS_FILENAME);
   if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim().length > 0)
-    .map((l) => JSON.parse(l) as SignedCheckpoint);
+  const lines = readFileSync(path, 'utf8').split('\n').filter((l) => l.trim().length > 0);
+  const out: SignedCheckpoint[] = [];
+  const seen = new Set<string>();
+  for (const [i, line] of lines.entries()) {
+    let cp: SignedCheckpoint;
+    try {
+      cp = JSON.parse(line) as SignedCheckpoint;
+    } catch {
+      throw new Error(`${CHECKPOINTS_FILENAME} line ${i + 1} is not valid JSON`);
+    }
+    // Byte-identical repeats are not merely redundant: they let one anchor be
+    // counted several times, inflating "anchors verified".
+    if (seen.has(line)) throw new Error(`${CHECKPOINTS_FILENAME} line ${i + 1} is a duplicate of an earlier checkpoint`);
+    seen.add(line);
+    out.push(cp);
+  }
+  return out;
 }

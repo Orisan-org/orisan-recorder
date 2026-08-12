@@ -23,10 +23,11 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import {
   PUBLIC_KEY_FILENAME,
+  SIGNING_KEY_FILENAME,
   anchorDigest,
   readCheckpoints,
   verifyCheckpointChain,
@@ -104,8 +105,10 @@ export interface VerifyOptions {
    * a clean verdict is unreachable — tail truncation leaves a valid prefix.
    */
   witnessFile?: string;
-  /** Override the openssl binary. */
+  /** Override the openssl binary. Must be an absolute path. */
   opensslPath?: string;
+  /** Expected TSA URL. An anchor recorded against any other authority is a finding. */
+  expectedTsaUrl?: string;
   /** Skip shelling out (used by tests that assert the cannot-verify path). */
   skipOpenssl?: boolean;
 }
@@ -165,13 +168,65 @@ function checkCheckpointAgainstEvents(
   return null;
 }
 
+/**
+ * Absolute path to openssl, or null if it cannot be found in a trusted location.
+ * An explicit opensslPath is honoured as given (tests rely on that) but must
+ * itself be absolute.
+ */
+export function resolveOpenssl(explicit?: string): string | null {
+  if (explicit !== undefined) return isAbsolute(explicit) ? explicit : null;
+  for (const candidate of [
+    '/opt/homebrew/bin/openssl',
+    '/usr/bin/openssl',
+    '/usr/local/bin/openssl',
+    '/bin/openssl',
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Public entry point. Any unexpected throw — a corrupt JSONL line, an
+ * unreadable anchor, a missing directory — becomes cannot_verify (exit 2).
+ *
+ * Previously these escaped as an uncaught rejection and the process exited 1,
+ * which any calling script reads as TAMPERED. An unreadable file is a gap in
+ * the evidence, not proof of wrongdoing, and mislabelling it both cries wolf
+ * and destroys the distinction the exit codes exist to make.
+ */
 export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
+  try {
+    return verifyInner(dir, opts);
+  } catch (e) {
+    return {
+      verdict: 'cannot_verify',
+      exitCode: EXIT_CANNOT_VERIFY,
+      events: 0,
+      checkpoints: 0,
+      anchored: 0,
+      findings: [{
+        severity: 'cannot_verify',
+        code: 'unreadable',
+        message: `verification could not be completed: ${(e as Error).message}`,
+      }],
+      opensslCommands: [],
+      attestedTimes: [],
+    };
+  }
+}
+
+function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   const findings: Finding[] = [];
   const opensslCommands: string[] = [];
-  const openssl = opts.opensslPath ?? 'openssl';
+  // Resolve to an absolute path. Dispatching by name lets anyone who can set
+  // PATH drop in a shim that exits 0, which turns every corrupted token into a
+  // verified anchor — and step 3 is the only thing standing between a forged
+  // token and a clean verdict.
+  const openssl = resolveOpenssl(opts.opensslPath);
 
   // ---- 1. the chain -------------------------------------------------------
-  const { store, recovery } = EventStore.open(dir);
+  const { store, recovery } = EventStore.open(dir, { readOnly: true });
   if (recovery.truncatedPartialTail) {
     findings.push({
       severity: 'cannot_verify',
@@ -266,12 +321,34 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
       continue;
     }
 
+    if (opts.expectedTsaUrl !== undefined && rec.tsa_url !== opts.expectedTsaUrl) {
+      findings.push({
+        severity: 'tampered',
+        code: 'tsa_url_mismatch',
+        checkpoint_seq_to: cp.seq_to,
+        message:
+          `checkpoint ${cp.seq_to} was anchored to ${rec.tsa_url}, not the expected ` +
+          `${opts.expectedTsaUrl}; an operator-chosen authority proves nothing`,
+      });
+      continue;
+    }
     if (opts.skipOpenssl) {
       findings.push({
         severity: 'cannot_verify',
         code: 'tsa_check_skipped',
         checkpoint_seq_to: cp.seq_to,
         message: 'TSA signature check was skipped',
+      });
+      continue;
+    }
+    if (openssl === null) {
+      findings.push({
+        severity: 'cannot_verify',
+        code: 'openssl_not_found',
+        checkpoint_seq_to: cp.seq_to,
+        message:
+          'openssl could not be resolved to an absolute path in a trusted location; ' +
+          'refusing to dispatch it by name',
       });
       continue;
     }
@@ -406,6 +483,20 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
       message:
         `an anchored checkpoint commits up to seq ${lastAnchoredSeq} but the log head is ` +
         `seq ${headSeq}; ${lastAnchoredSeq - headSeq} event(s) were removed from the tail`,
+    });
+  }
+
+  // ---- 5b. key custody ----------------------------------------------------
+  // A signing key inside the log directory means whoever can rewrite the events
+  // can re-sign the checkpoints over them, so the signature attests to nothing
+  // an attacker could not reproduce.
+  if (existsSync(join(dir, SIGNING_KEY_FILENAME))) {
+    findings.push({
+      severity: 'cannot_verify',
+      code: 'signing_key_beside_data',
+      message:
+        `the signing key is stored in ${dir}, beside the data it authenticates; anyone who ` +
+        'can rewrite the log can re-sign it. Move it outside and re-anchor.',
     });
   }
 

@@ -21,9 +21,10 @@ function usage(): string {
     'Usage:',
     '  orisan-rec demo <dir>                     write a fabricated 40-event session',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
-    '  orisan-rec checkpoint <dir>               cut a checkpoint over uncovered events',
+    '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
-    '  orisan-rec verify <dir> [--tsa-ca <pem>]  full verification',
+    '  orisan-rec verify <dir> [--tsa-ca <pem>] [--witness <file>] [--tsa <url>]',
+    '                                            full verification',
     '',
     'verify exit codes:  0 clean   1 tampered   2 cannot-verify',
     'A cannot-verify result is never a pass.',
@@ -91,7 +92,11 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'checkpoint': {
-      const rec = Recorder.open(dir, { anchor: { enabled: false } });
+      const keyPath = flag(argv, '--key');
+      const rec = Recorder.open(dir, {
+        anchor: { enabled: false },
+        ...(keyPath !== undefined ? { signingKeyPath: keyPath } : {}),
+      });
       const cp = await rec.cutCheckpoint('manual');
       rec.close();
       if (!cp) {
@@ -138,6 +143,8 @@ async function main(argv: string[]): Promise<number> {
     case 'verify': {
       const report = verify(dir, {
         ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
+        ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
+        ...(flag(argv, '--tsa') !== undefined ? { expectedTsaUrl: flag(argv, '--tsa')! } : {}),
       });
       const out = formatReport(report, dir);
       if (report.verdict === 'clean') process.stdout.write(out);

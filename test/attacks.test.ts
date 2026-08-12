@@ -31,11 +31,14 @@ afterAll(() => { tsa.cleanup(); });
 let dir: string;
 let witnessDir: string;
 let witnessFile: string;
+let signingKeyPath: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'orisan-attack-'));
   // Deliberately outside `dir`: a witness the operator can rewrite is no witness.
   witnessDir = mkdtempSync(join(tmpdir(), 'orisan-witness-'));
   witnessFile = join(witnessDir, 'witness.jsonl');
+  // Key custody: outside the log directory, like the witness.
+  signingKeyPath = join(witnessDir, 'signing.key');
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -58,7 +61,7 @@ function ev(i: number): EventInput {
 async function honestLog(n = 30, interval = 10): Promise<void> {
   const rec = Recorder.open(dir, {
     checkpointInterval: interval, fsync: false,
-    anchor: { ...tsa.anchorOptions }, witnessFile,
+    anchor: { ...tsa.anchorOptions }, witnessFile, signingKeyPath,
   });
   for (let i = 0; i < n; i++) await rec.record(ev(i));
   await rec.end();
@@ -130,12 +133,12 @@ describe('confirmed attacks — each must be caught', () => {
     reseal(all);
     rmSync(join(dir, 'checkpoints.jsonl'), { force: true });
     rmSync(join(dir, 'anchors'), { recursive: true, force: true });
-    rmSync(join(dir, 'signing.key'), { force: true });
+    rmSync(signingKeyPath, { force: true });
     rmSync(join(dir, 'signing.pub.pem'), { force: true });
 
     // Fresh keypair, fresh checkpoint, genuinely anchored — but anchored NOW,
     // long after the events it claims to cover.
-    const kf = generateSigningKey(dir);
+    const kf = generateSigningKey(dir, signingKeyPath);
     const events = EventStore.open(dir).store.readAll();
     const cp = buildCheckpoint(events.map((e) => e.hash), 0, 'manual', kf);
     appendCheckpoint(dir, cp);
@@ -150,7 +153,7 @@ describe('confirmed attacks — each must be caught', () => {
     // Sign with the EXISTING key, not a fresh one: rotating the key would break
     // the honest checkpoints' signatures and get caught for the wrong reason.
     // The real poison pill leaves everything else valid.
-    const kf = loadSigningKey(dir);
+    const kf = loadSigningKey(dir, signingKeyPath);
     // Forged by hand, not via buildCheckpoint: a real attacker writes and signs
     // the JSON directly and is not bound by our API's guard rails.
     const pill = signCheckpoint(emptyBody(1_000_000, 9_000_000, kf.key_id), kf);
@@ -166,10 +169,10 @@ describe('confirmed attacks — each must be caught', () => {
     for (const f of readdirSegments()) rmSync(join(dir, f), { force: true });
     rmSync(join(dir, 'checkpoints.jsonl'), { force: true });
     rmSync(join(dir, 'anchors'), { recursive: true, force: true });
-    rmSync(join(dir, 'signing.key'), { force: true });
+    rmSync(signingKeyPath, { force: true });
     rmSync(join(dir, 'signing.pub.pem'), { force: true });
 
-    const kf = generateSigningKey(dir);
+    const kf = generateSigningKey(dir, signingKeyPath);
     const empty = signCheckpoint(emptyBody(0, -1, kf.key_id), kf);
     appendCheckpoint(dir, empty);
     await anchorCheckpoint(dir, empty, tsa.anchorOptions);
@@ -203,7 +206,7 @@ describe('the witness', () => {
     const inside = join(dir, 'witness.jsonl');
     const rec = Recorder.open(dir, {
       checkpointInterval: 10, fsync: false,
-      anchor: { ...tsa.anchorOptions }, witnessFile: inside,
+      anchor: { ...tsa.anchorOptions }, witnessFile: inside, signingKeyPath,
     });
     for (let i = 0; i < 20; i++) await rec.record(ev(i));
     await rec.end();
@@ -216,7 +219,7 @@ describe('the witness', () => {
   it('detects a checkpoint rewritten after it was witnessed', async () => {
     await honestLog(20, 10);
     // Re-sign checkpoint 1 over a different range, keeping the log self-consistent.
-    const kf = loadSigningKey(dir);
+    const kf = loadSigningKey(dir, signingKeyPath);
     const cps = readCheckpoints(dir);
     const forged = signCheckpoint({ ...cps[1]!, created_at: new Date(0).toISOString() }, kf);
     writeFileSync(join(dir, 'checkpoints.jsonl'),
@@ -248,7 +251,7 @@ describe('attested time (Job 5) — catches re-anchoring even with no witness', 
   async function backdatedLog(): Promise<void> {
     const base = Date.now() - 3 * 60 * 60 * 1000;
     const rec = Recorder.open(dir, {
-      checkpointInterval: 10, fsync: false, anchor: { ...tsa.anchorOptions },
+      checkpointInterval: 10, fsync: false, anchor: { ...tsa.anchorOptions }, signingKeyPath,
     });
     for (let i = 0; i < 10; i++) {
       await rec.record({ ...ev(i), ts: new Date(base + i * 1000).toISOString() });
@@ -284,7 +287,7 @@ describe('attested time (Job 5) — catches re-anchoring even with no witness', 
   it('an unanchored (queued) checkpoint is cannot-verify, never tampered', async () => {
     const offline = { fetchImpl: async () => { throw new Error('ENOTFOUND'); } };
     const rec = Recorder.open(dir, {
-      checkpointInterval: 5, fsync: false, anchor: { ...offline }, witnessFile,
+      checkpointInterval: 5, fsync: false, anchor: { ...offline }, witnessFile, signingKeyPath,
     });
     for (let i = 0; i < 10; i++) await rec.record(ev(i));
     await rec.end();

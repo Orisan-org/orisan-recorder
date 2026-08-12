@@ -21,8 +21,18 @@ import { verify, EXIT_CLEAN, EXIT_TAMPERED, EXIT_CANNOT_VERIFY } from '../src/ve
 import type { AnchorOptions } from '../src/tsa.js';
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'orisan-atk-')); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+let keyDir: string;
+let signingKeyPath: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'orisan-atk-'));
+  // Never the default (~/.orisan): tests must not write to the real home dir.
+  keyDir = mkdtempSync(join(tmpdir(), 'orisan-atk-key-'));
+  signingKeyPath = join(keyDir, 'signing.key');
+});
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(keyDir, { recursive: true, force: true });
+});
 
 /** A syntactically valid granted TimeStampResp — no network, no real TSA. */
 const fakeResp = () => derSequence(derSequence(derInteger(0)), derSequence(derInteger(1)));
@@ -46,7 +56,7 @@ function ev(i: number): EventInput {
 }
 
 async function recordSession(n: number, interval = 10): Promise<void> {
-  const rec = Recorder.open(dir, { checkpointInterval: interval, fsync: false, anchor: { ...fakeTsa } });
+  const rec = Recorder.open(dir, { checkpointInterval: interval, fsync: false, anchor: { ...fakeTsa }, signingKeyPath });
   for (let i = 0; i < n; i++) await rec.record(ev(i));
   await rec.end();
 }
@@ -162,7 +172,7 @@ describe('ACCEPTANCE: the recompute attack', () => {
 describe('ACCEPTANCE: cannot-verify is never success', () => {
   it('TSA unreachable: events still record, checkpoint queued, verify says cannot verify and exits 2', async () => {
     const offline: AnchorOptions = { fetchImpl: async () => { throw new Error('ENOTFOUND'); } };
-    const rec = Recorder.open(dir, { checkpointInterval: 5, fsync: false, anchor: { ...offline } });
+    const rec = Recorder.open(dir, { checkpointInterval: 5, fsync: false, anchor: { ...offline }, signingKeyPath });
     for (let i = 0; i < 12; i++) await rec.record(ev(i));
     await rec.end();
 

@@ -11,9 +11,10 @@ import { EventStore, type StoreOptions } from './store.js';
 import { anchorCheckpoint, type AnchorOptions } from './tsa.js';
 import { witnessCheckpoint } from './witness.js';
 import type { EventInput, RecordedEvent } from './schema.js';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { SIGNING_KEY_FILENAME } from './checkpoint.js';
+import { PUBLIC_KEY_FILENAME } from './checkpoint.js';
 
 export interface RecorderOptions extends StoreOptions {
   checkpointInterval?: number;
@@ -24,6 +25,17 @@ export interface RecorderOptions extends StoreOptions {
    * Without it, tail truncation is undetectable and verify cannot return clean.
    */
   witnessFile?: string;
+  /**
+   * Where the signing private key lives. Defaults to ~/.orisan/signing.key —
+   * deliberately NOT the log directory, because a key stored beside the data
+   * it authenticates lets anyone who can rewrite the log re-sign it.
+   */
+  signingKeyPath?: string;
+}
+
+/** Default key location: outside any log directory. */
+export function defaultSigningKeyPath(): string {
+  return join(homedir(), '.orisan', 'signing.key');
 }
 
 export class Recorder {
@@ -54,7 +66,13 @@ export class Recorder {
 
   static open(dir: string, opts: RecorderOptions = {}): Recorder {
     const { store } = EventStore.open(dir, opts);
-    const key = existsSync(join(dir, SIGNING_KEY_FILENAME)) ? loadSigningKey(dir) : generateSigningKey(dir);
+    const keyPath = opts.signingKeyPath ?? defaultSigningKeyPath();
+    const key = existsSync(keyPath) ? loadSigningKey(dir, keyPath) : generateSigningKey(dir, keyPath);
+    // The public key must exist in the LOG directory even when the private key
+    // was loaded from elsewhere — otherwise a log signed with a pre-existing
+    // key ships with nothing to verify it against.
+    const pubPath = join(dir, PUBLIC_KEY_FILENAME);
+    if (!existsSync(pubPath)) writeFileSync(pubPath, key.public_key_pem, { mode: 0o644 });
     return new Recorder(dir, store, key, opts);
   }
 

@@ -35,9 +35,18 @@ import {
   type RecordedEvent,
 } from './schema.js';
 
-const SEGMENT_RE = /^events-(\d{4,})\.jsonl$/;
+// Exactly four digits. `\d{4,}` let events-0000 and events-00000 both index 0,
+// so the order of the truth store depended on readdirSync order.
+const SEGMENT_RE = /^events-(\d{4})\.jsonl$/;
 
 export interface StoreOptions {
+  /**
+   * Never create, never truncate. verify() uses this: a verifier that writes
+   * to the artefact it is checking destroys evidence — a torn tail removed by
+   * the first run is invisible to the second — and creating a missing
+   * directory turns "that path does not exist" into a confusing exit 2.
+   */
+  readOnly?: boolean;
   /** Roll to a new segment after this many events. */
   maxEventsPerSegment?: number;
   /**
@@ -93,6 +102,7 @@ export class EventStore {
   readonly dir: string;
   private readonly maxEventsPerSegment: number;
   private readonly doFsync: boolean;
+  private readonly readOnly: boolean;
 
   private fd: number | null = null;
   private currentSegment = 0;
@@ -104,6 +114,7 @@ export class EventStore {
     this.dir = dir;
     this.maxEventsPerSegment = opts.maxEventsPerSegment;
     this.doFsync = opts.fsync;
+    this.readOnly = opts.readOnly;
   }
 
   /**
@@ -114,10 +125,15 @@ export class EventStore {
     const resolved: Required<StoreOptions> = {
       maxEventsPerSegment: opts.maxEventsPerSegment ?? 1000,
       fsync: opts.fsync ?? true,
+      readOnly: opts.readOnly ?? false,
     };
     if (resolved.maxEventsPerSegment < 1) throw new Error('maxEventsPerSegment must be >= 1');
 
-    mkdirSync(dir, { recursive: true });
+    if (resolved.readOnly) {
+      if (!existsSync(dir)) throw new Error(`no such log directory: ${dir}`);
+    } else {
+      mkdirSync(dir, { recursive: true });
+    }
     const store = new EventStore(dir, resolved);
     const recovery = store.recover();
     return { store, recovery };
@@ -145,15 +161,21 @@ export class EventStore {
       const isLastSegment = i === segments.length - 1;
 
       if (remainder.length > 0) {
-        if (!isLastSegment) {
+        if (this.readOnly) {
+          // Report it; do not repair it. The caller decides what a torn tail means.
+          report.truncatedPartialTail = true;
+          report.bytesDiscarded = remainder.length;
+          report.segment = name;
+        } else if (!isLastSegment) {
           // A torn line anywhere but the very end is real corruption, not a
           // crash artefact. Refuse rather than silently dropping a record.
           throw new Error(`corrupt segment ${name}: incomplete line before end of chain`);
+        } else {
+          truncateSync(path, statSync(path).size - remainder.length);
+          report.truncatedPartialTail = true;
+          report.bytesDiscarded = remainder.length;
+          report.segment = name;
         }
-        truncateSync(path, statSync(path).size - remainder.length);
-        report.truncatedPartialTail = true;
-        report.bytesDiscarded = remainder.length;
-        report.segment = name;
       }
 
       let inThisSegment = 0;
@@ -195,6 +217,7 @@ export class EventStore {
 
   /** Append one event. Returns once the line is durable on disk. */
   append(input: EventInput): RecordedEvent {
+    if (this.readOnly) throw new Error('store was opened read-only');
     const event = buildEvent(input, this.nextSeq, this.lastHash);
     const fd = this.ensureOpenSegment();
     const line = Buffer.from(`${JSON.stringify(event)}\n`, 'utf8');
