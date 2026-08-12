@@ -9,6 +9,7 @@
 import { DEFAULT_CHECKPOINT_INTERVAL, appendCheckpoint, buildCheckpoint, generateSigningKey, loadSigningKey, readCheckpoints, type SignedCheckpoint, type SigningKeyFile } from './checkpoint.js';
 import { EventStore, type StoreOptions } from './store.js';
 import { anchorCheckpoint, type AnchorOptions } from './tsa.js';
+import { witnessCheckpoint } from './witness.js';
 import type { EventInput, RecordedEvent } from './schema.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +18,12 @@ import { SIGNING_KEY_FILENAME } from './checkpoint.js';
 export interface RecorderOptions extends StoreOptions {
   checkpointInterval?: number;
   anchor?: AnchorOptions & { enabled?: boolean };
+  /**
+   * Path to the external witness log. Should live OUTSIDE the log directory —
+   * ideally on a machine or account the recorder's operator cannot rewrite.
+   * Without it, tail truncation is undetectable and verify cannot return clean.
+   */
+  witnessFile?: string;
 }
 
 export class Recorder {
@@ -25,6 +32,7 @@ export class Recorder {
   private readonly key: SigningKeyFile;
   private readonly interval: number;
   private readonly anchorOpts: AnchorOptions & { enabled: boolean };
+  private readonly witnessFile: string | undefined;
   /** seq of the last event already covered by a checkpoint. */
   private lastCheckpointedSeq: number;
   /** The tail of the checkpoint chain, so the next one can link to it. */
@@ -37,6 +45,7 @@ export class Recorder {
     this.interval = opts.checkpointInterval ?? DEFAULT_CHECKPOINT_INTERVAL;
     if (this.interval < 1) throw new Error('checkpointInterval must be >= 1');
     this.anchorOpts = { enabled: true, ...(opts.anchor ?? {}) };
+    this.witnessFile = opts.witnessFile;
 
     const cps = readCheckpoints(dir);
     this.lastCheckpoint = cps.length ? cps[cps.length - 1]! : null;
@@ -71,6 +80,10 @@ export class Recorder {
     appendCheckpoint(this.dir, cp);
     this.lastCheckpoint = cp;
     this.lastCheckpointedSeq = cp.seq_to;
+
+    // Witness before anchoring: the witness is the record that this checkpoint
+    // existed at all, and it must not be lost if the TSA call hangs or fails.
+    if (this.witnessFile !== undefined) witnessCheckpoint(this.witnessFile, cp);
 
     if (this.anchorOpts.enabled) {
       // Deliberately ignoring the result: an unreachable TSA must never stop

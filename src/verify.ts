@@ -23,7 +23,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import {
   PUBLIC_KEY_FILENAME,
@@ -36,6 +36,7 @@ import {
 import { merkleRoot } from './merkle.js';
 import { EventStore } from './store.js';
 import { anchorPaths, readAnchor } from './tsa.js';
+import { highestWitnessedIndex, readWitness, verifyAgainstWitness } from './witness.js';
 import type { RecordedEvent } from './schema.js';
 
 export const EXIT_CLEAN = 0;
@@ -67,6 +68,11 @@ export interface VerifyReport {
 export interface VerifyOptions {
   /** CA bundle for the TSA. Without it the anchor check cannot run → exit 2. */
   tsaCaFile?: string;
+  /**
+   * External witness log. Without one, completeness cannot be established and
+   * a clean verdict is unreachable — tail truncation leaves a valid prefix.
+   */
+  witnessFile?: string;
   /** Override the openssl binary. */
   opensslPath?: string;
   /** Skip shelling out (used by tests that assert the cannot-verify path). */
@@ -330,6 +336,56 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
         `an anchored checkpoint commits up to seq ${lastAnchoredSeq} but the log head is ` +
         `seq ${headSeq}; ${lastAnchoredSeq - headSeq} event(s) were removed from the tail`,
     });
+  }
+
+  // ---- 6. the external witness -------------------------------------------
+  // Nothing above can detect suffix deletion: truncating events together with
+  // the checkpoints covering them leaves a valid prefix. Only a record held
+  // outside the operator's control knows a later checkpoint ever existed.
+  if (opts.witnessFile === undefined) {
+    findings.push({
+      severity: 'cannot_verify',
+      code: 'no_witness',
+      message:
+        'no witness log supplied (--witness), so completeness cannot be established: ' +
+        'deleting trailing events together with the checkpoints covering them leaves a ' +
+        'valid prefix that is indistinguishable from a log that ended earlier',
+    });
+  } else if (!existsSync(opts.witnessFile)) {
+    findings.push({
+      severity: 'cannot_verify',
+      code: 'witness_missing',
+      message: `witness log not found: ${opts.witnessFile}`,
+    });
+  } else {
+    const witness = readWitness(opts.witnessFile);
+    if (witness.length === 0) {
+      findings.push({
+        severity: 'cannot_verify',
+        code: 'witness_empty',
+        message: `witness log ${opts.witnessFile} is empty; it attests to nothing`,
+      });
+    }
+    for (const b of verifyAgainstWitness(checkpoints, witness)) {
+      findings.push({
+        severity: 'tampered',
+        code: `witness_${b.reason}`,
+        checkpoint_seq_to: checkpoints.find((c) => c.index === b.index)?.seq_to ?? -1,
+        message: b.message,
+      });
+    }
+    // A witness kept inside the log directory is under the same hand that
+    // writes the log, so it proves nothing. Say so rather than counting it.
+    if (resolve(opts.witnessFile).startsWith(resolve(dir) + sep)) {
+      findings.push({
+        severity: 'cannot_verify',
+        code: 'witness_inside_log_dir',
+        message:
+          `the witness log lives inside ${dir}, under the same control as the data it ` +
+          'attests to; move it somewhere the recorder operator cannot rewrite',
+      });
+    }
+    void highestWitnessedIndex;
   }
 
   const verdict = worst(findings);

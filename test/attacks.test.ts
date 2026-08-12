@@ -29,8 +29,18 @@ beforeAll(() => { tsa = startLocalTsa(); }, 60_000);
 afterAll(() => { tsa.cleanup(); });
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'orisan-attack-')); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+let witnessDir: string;
+let witnessFile: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'orisan-attack-'));
+  // Deliberately outside `dir`: a witness the operator can rewrite is no witness.
+  witnessDir = mkdtempSync(join(tmpdir(), 'orisan-witness-'));
+  witnessFile = join(witnessDir, 'witness.jsonl');
+});
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(witnessDir, { recursive: true, force: true });
+});
 
 function ev(i: number): EventInput {
   return {
@@ -46,12 +56,15 @@ function ev(i: number): EventInput {
 
 /** Record n events with a checkpoint every `interval`, all anchored for real. */
 async function honestLog(n = 30, interval = 10): Promise<void> {
-  const rec = Recorder.open(dir, { checkpointInterval: interval, fsync: false, anchor: { ...tsa.anchorOptions } });
+  const rec = Recorder.open(dir, {
+    checkpointInterval: interval, fsync: false,
+    anchor: { ...tsa.anchorOptions }, witnessFile,
+  });
   for (let i = 0; i < n; i++) await rec.record(ev(i));
   await rec.end();
 }
 
-const run = () => verify(dir, { tsaCaFile: tsa.caFile });
+const run = () => verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
 
 /** A count:0 checkpoint body, as an attacker would hand-craft it. */
 function emptyBody(from: number, to: number, keyId: string): CheckpointBody {
@@ -175,5 +188,42 @@ describe('confirmed attacks — each must be caught', () => {
     const r = run();
     expect(r.exitCode).toBe(EXIT_TAMPERED);
     expect(readCheckpoints(dir)).toHaveLength(2);
+  });
+});
+
+describe('the witness', () => {
+  it('a clean log needs one: without it, verify cannot reach exit 0', async () => {
+    await honestLog();
+    const r = verify(dir, { tsaCaFile: tsa.caFile });
+    expect(r.exitCode).not.toBe(EXIT_CLEAN);
+    expect(r.findings.some((f) => f.code === 'no_witness')).toBe(true);
+  });
+
+  it('a witness kept inside the log directory is not counted', async () => {
+    const inside = join(dir, 'witness.jsonl');
+    const rec = Recorder.open(dir, {
+      checkpointInterval: 10, fsync: false,
+      anchor: { ...tsa.anchorOptions }, witnessFile: inside,
+    });
+    for (let i = 0; i < 20; i++) await rec.record(ev(i));
+    await rec.end();
+
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile: inside });
+    expect(r.exitCode).not.toBe(EXIT_CLEAN);
+    expect(r.findings.some((f) => f.code === 'witness_inside_log_dir')).toBe(true);
+  });
+
+  it('detects a checkpoint rewritten after it was witnessed', async () => {
+    await honestLog(20, 10);
+    // Re-sign checkpoint 1 over a different range, keeping the log self-consistent.
+    const kf = loadSigningKey(dir);
+    const cps = readCheckpoints(dir);
+    const forged = signCheckpoint({ ...cps[1]!, created_at: new Date(0).toISOString() }, kf);
+    writeFileSync(join(dir, 'checkpoints.jsonl'),
+      [cps[0]!, forged].map((c) => `${JSON.stringify(c)}\n`).join(''));
+
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.exitCode).toBe(EXIT_TAMPERED);
+    expect(r.findings.some((f) => f.code === 'witness_link_mismatch')).toBe(true);
   });
 });
