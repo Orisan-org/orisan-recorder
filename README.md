@@ -4,88 +4,121 @@ A recorder for AI agent actions.
 
 Two properties are the point of this project, in order:
 
-1. **Discovery.** We find every agent and MCP server on the machine, so the record
-   can claim to be *complete*. (Slice R2.)
-2. **Witnessed integrity.** Checkpoints are signed and anchored to an external RFC
-   3161 timestamp authority. **This does not yet hold under a hostile operator** —
-   see `SECURITY-REVIEW-R1.md`. Do not repeat this as a guarantee until the fixes
-   listed there have landed.
+1. **Discovery.** Find every agent and MCP server on the machine, so the record can
+   claim to be *complete*. (Slice R2, not built.)
+2. **Witnessed integrity.** Make the log expensive to rewrite even for the person
+   who owns the machine it runs on. (Slices R1.3–R1.5, built; see the exact claim
+   below.)
 
-## Why the hash chain alone is not enough
+## What `verify` proves, and what it does not
 
-A competitor teardown established this empirically: a plain hash chain over public
-inputs is forgeable by anyone who can write to the store. Delete the inconvenient
-records, recompute every hash from genesis with the tool's own hash function, and
-verification passes. Two shipping products certify such a log as untampered — one of
-them under a valid signature.
+This section is the contract. No sentence here is stronger than a test in
+`test/attacks.test.ts`, and every attack listed in `SECURITY-REVIEW-R1.md` runs in
+CI permanently.
 
-So: **nothing in this repo should ever describe the chain by itself as tamper-proof.**
-The chain detects careless edits. Only a signed checkpoint anchored outside our
-control detects a competent rewrite. Until R1.3 lands, this recorder has the weaker
-property, and says so.
+**With a witness held outside the operator's control, and a pinned TSA, `verify`
+detects:**
 
-A second rule taken from the same teardown: **we never verify our own time proof.**
-`verify` shells out to `openssl ts -verify` for the RFC 3161 check and prints the
-command it ran, so a reviewer trusts no code of ours for that step.
+| Attack | Caught by |
+|---|---|
+| Editing an event | chain walk, naming the seq |
+| Editing an event but keeping its stored hash | Merkle root, recomputed from content |
+| Deleting or reordering events | chain walk + anchored Merkle root |
+| Re-sealing the whole chain from genesis | anchored checkpoint root |
+| Deleting a checkpoint from the middle | checkpoint chain: index gap, seq discontinuity |
+| A `count: 0` checkpoint over a huge range | `count >= 1` is enforced |
+| Erasing everything and starting over | witness, and `count >= 1` |
+| Deleting the tail — events, checkpoint and anchors together | **witness only** |
+| Re-anchoring old events today | attested `genTime`, 1-hour window |
+| Swapping in another authority's timestamp | `--tsa` pinning |
+| A `PATH` shim standing in for openssl | openssl resolved to an absolute path |
+
+**It does not prove:**
+
+- **That every action reached the recorder.** Nothing here observes an agent that
+  was never instrumented. That is capture completeness, a property of where the
+  recorder sits, and it is what R2's discovery is for. A log can be perfectly
+  verifiable and still be missing everything that matters.
+- **Completeness without a witness.** A self-held log cannot detect suffix
+  deletion: truncating the trailing events together with the checkpoints covering
+  them leaves a valid prefix, indistinguishable from a log that ended earlier.
+  Run without `--witness` and `verify` returns exit 2, never 0, and says why.
+- **Anything about a witness the operator can rewrite.** A witness inside the log
+  directory is reported and not counted.
+- **That the timestamp is genuine.** We never verify our own time proof. `verify`
+  shells out to `openssl ts -verify`, prints the exact command, and prints the
+  attested time so a human re-running it knows what to expect — "Verification: OK"
+  on its own hides a re-anchoring.
+- **Non-repudiation.** The signing key identifies the recorder, not a person.
+
+## Exit codes
+
+    0  clean          every check ran and passed
+    1  tampered       a break, a bad signature, a violated anchored root,
+                      a broken checkpoint chain, or a witness disagreement
+    2  cannot-verify  a check could not be completed — NEVER a pass
+
+Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine".
+No witness, no anchor, no public key, no TSA CA, an unresolvable openssl, or a
+corrupt file all yield 2. Reaching 0 requires every check to have actually run.
+
+## Custody: the part that is operational, not cryptographic
+
+Three things must live somewhere the recorder's operator cannot silently rewrite,
+or the guarantees above degrade to "no careless tampering found":
+
+- **the witness log** (`--witness`) — the only defence against tail truncation
+- **the signing key** (`--key`, default `~/.orisan/signing.key`) — a key beside the
+  data lets whoever rewrites the log re-sign it; `verify` reports it if it finds one
+- **the TSA** (`--tsa`) — an operator-chosen authority proves nothing
+
+## Quick start
+
+    npm install
+    npx tsx src/cli.ts demo /tmp/session
+    npx tsx src/cli.ts checkpoint /tmp/session --key ~/.orisan/signing.key
+    npx tsx src/cli.ts anchor /tmp/session
+    npx tsx src/cli.ts verify /tmp/session --tsa-ca ca.pem --witness ~/witness.jsonl
 
 ## Status
 
 | Slice | What | State |
 |---|---|---|
 | R1.1 | Versioned event schema + hash chain | done |
-| R1.2 | Append-only store, SQLite index, encrypted payloads | done |
-| R1.5 | Fake session generator (`demo`) | done |
-| R1.3 | Signed checkpoints + RFC 3161 anchoring | done (Tier C) |
-| R1.4 | `verify` command | done (Tier C) |
+| R1.2 | Append-only store, SQLite index, sealed payloads | done |
+| R1.3 | Merkle roots, signed checkpoints, RFC 3161 anchoring, witness | done |
+| R1.4 | `verify` | done |
+| R1.5 | `demo` | done |
 | R2 | Discovery, attach/detach, local UI | not started |
 
-All R1 acceptance tests pass, including `test/attacker.test.ts`: the recompute
-attack (delete events, re-seal the chain with our own hash function — `verify`
-exits 1 naming the checkpoint) and the TSA-unreachable case (recording continues,
-the checkpoint queues, `verify` exits 2 and never reports clean). Verified end to
-end against the live freetsa.org.
-
-**Those tests describe a careless attacker.** An adversarial review
-(`SECURITY-REVIEW-R1.md`) found five confirmed routes to `exit 0` on a tampered
-log, four needing no cryptography — the simplest is deleting trailing events
-together with the checkpoint and anchor that covered them. The root cause is that
-`verify` validates only what is present and nothing establishes what should be
-present. Until the fixes in that document land, read `exit 0` as "no careless
-tampering found", not as an integrity guarantee.
+`SECURITY-REVIEW-R1.md` records an adversarial review that found five routes to
+exit 0 on a tampered log. All five are closed and all five are permanent tests.
+The review's own findings section is left intact rather than edited down, because
+the list of what was wrong is more useful than a claim that nothing is.
 
 ## Layout
 
-    src/schema.ts     R1.1  event shape, canonical JSON, chain hashing
-    src/store.ts      R1.2  append-only segments, fsync, crash recovery
-    src/index-db.ts   R1.2  SQLite index (a cache; the JSONL is the truth)
-    src/payloads.ts   R1.2  sodium crypto_box_seal payload blobs   [Tier C]
-    src/merkle.ts     R1.3  RFC 6962 Merkle tree
-    src/checkpoint.ts R1.3  Ed25519-signed checkpoints             [Tier C]
-    src/der.ts        R1.3  minimal DER for RFC 3161
-    src/tsa.ts        R1.3  timestamp anchoring + offline queue     [Tier C]
-    src/recorder.ts   R1.3  store + checkpoint cadence
-    src/verify.ts     R1.4  the verify command                      [Tier C]
-    src/demo.ts       R1.5  fake session generator
-    src/cli.ts              CLI surface
-
-## verify exit codes
-
-    0  clean          every check ran and passed
-    1  tampered       a break, a bad signature, or a violated anchored root
-    2  cannot-verify  a check could not be completed — NEVER a pass
-
-Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine".
-A missing anchor, a missing public key, or an openssl that will not run all yield 2.
-
-Caveat from the review: a *deleted* anchor, together with its checkpoint and the
-events it covered, currently yields 0. That is the top open defect.
+    src/schema.ts     event shape, canonical JSON, chain hashing
+    src/store.ts      append-only segments, fsync, crash recovery, read-only mode
+    src/index-db.ts   SQLite index (a cache; the JSONL is the truth)
+    src/payloads.ts   sodium crypto_box_seal payload blobs
+    src/merkle.ts     RFC 6962 Merkle tree
+    src/checkpoint.ts Ed25519-signed, chained checkpoints
+    src/der.ts        minimal DER for RFC 3161
+    src/tsa.ts        timestamp anchoring, offline queue, attested time
+    src/witness.ts    external witness log
+    src/recorder.ts   store + checkpoint cadence
+    src/verify.ts     the verify command
+    src/demo.ts       fake session generator
+    src/cli.ts        CLI surface
 
 ## Development
 
-    npm install
     npm run typecheck
     npm test
 
-Node 20+. No GNU-only flags anywhere: the recorder must behave identically on macOS
-and Linux, and a competitor shipped a macOS-dead feature by calling `ps --no-headers`
-inside a bare `except: pass`. Cross-platform CI lands with the rest of R1.
+Node 20+. No GNU-only flags: a competitor shipped a macOS-dead feature by calling
+`ps --no-headers` inside a bare `except: pass`, and the tests are cross-platform
+for that reason. The TSA fixture in `test/fixtures/` runs a real local timestamp
+authority so CI exercises the success path offline — the absence of that is why
+five criticals shipped unnoticed.
