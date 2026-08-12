@@ -1,6 +1,6 @@
 /** R2.2 — attach/detach and the passthrough shim. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -202,4 +202,39 @@ describe('ACCEPTANCE: a round-trip through the shim produces events', () => {
     // Recording is dead; the tool call still succeeded.
     expect(out).toMatch(/fake result for read_file/);
   }, 20_000);
+});
+
+describe('regression: the attached config must actually be runnable', () => {
+  it('ACCEPTANCE: attach via the real CLI produces a config a plain spawn can start', async () => {
+    const cfg = writeConfig();
+    execFileSync(TSX, [join(process.cwd(), 'src', 'cli.ts'), 'attach', cfg,
+      '--log', logDir, '--key', join(keyDir, 'signing.key')], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    // The CLI used to write `node .../shim-main.ts`, which node cannot execute.
+    // Unit tests missed it because they injected tsx by hand; only an
+    // end-to-end attach showed it. So: start exactly what the config says.
+    const doc = JSON.parse(readFileSync(cfg, 'utf8')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    const entry = doc.mcpServers['fake']!;
+
+    const out = await new Promise<string>((resolve, reject) => {
+      const child = spawn(entry.command, entry.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      let o = '';
+      let err = '';
+      child.stdout.on('data', (d: Buffer) => { o += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      child.on('error', reject);
+      child.on('close', () => {
+        if (o === '' && err !== '') reject(new Error(`shim produced no output; stderr: ${err.slice(0, 300)}`));
+        else resolve(o);
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_file', arguments: {} } })}\n`);
+      setTimeout(() => child.stdin.end(), 1500);
+    });
+
+    expect(out).toMatch(/fake result for read_file/);
+    const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
+    expect(events.filter((e) => e.kind === 'tool_call')).toHaveLength(1);
+  }, 30_000);
 });

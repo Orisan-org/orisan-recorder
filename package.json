@@ -14,7 +14,10 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:ui": "cd ui && npm install --silent --no-audit --no-fund && vite build",
+    "ui": "tsx src/cli.ts ui",
+    "pretest": "npm run build:ui"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",

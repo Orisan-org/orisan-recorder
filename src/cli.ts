@@ -11,13 +11,15 @@ import { scan, serverCount } from './discover.js';
 import { attach, detach, discardBackup } from './attach.js';
 import { fileURLToPath } from 'node:url';
 import { dirname as pathDirname, join as pathJoin } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { EventIndex } from './index-db.js';
 import { EventStore } from './store.js';
+import { spawn } from 'node:child_process';
 import { Recorder } from './recorder.js';
 import { readCheckpoints } from './checkpoint.js';
 import { DEFAULT_TSA_URL, drainAnchorQueue, pendingAnchors } from './tsa.js';
 import { formatReport, verify } from './verify.js';
+import { DEFAULT_PORT, startServer } from './server.js';
 
 function usage(): string {
   return [
@@ -27,7 +29,8 @@ function usage(): string {
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
     '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
     '  orisan-rec detach <config>                restore the original config exactly',
-    '  orisan-rec demo <dir>                     write a fabricated 40-event session',
+    '  orisan-rec demo <dir> [--with-ui]         write a fabricated session, optionally open the UI',
+    '  orisan-rec ui <dir> [--port N]            serve the local UI on 127.0.0.1',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
@@ -40,11 +43,60 @@ function usage(): string {
   ].join('\n');
 }
 
-/** Absolute path to the shim entry point, resolved from this module. */
-function shimEntryPoint(): string {
+async function serveUi(dir: string, argv: string[]): Promise<number> {
+  const portFlag = flag(argv, '--port');
+  const port = portFlag !== undefined ? Number.parseInt(portFlag, 10) : DEFAULT_PORT;
+  const runner = shimRunner();
+  const { port: bound } = await startServer({
+    logDir: dir,
+    port,
+    shimPath: runner.shimPath,
+    nodePath: runner.nodePath,
+    ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+    ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
+    ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
+  });
+  const url = `http://127.0.0.1:${bound}`;
+  process.stdout.write(
+    `UI on ${url}\n` +
+    '  loopback only, no authentication — the binding is the access control\n' +
+    '  Ctrl-C to stop\n',
+  );
+  try {
+    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    // A browser that will not open is not a failure worth exiting for.
+  }
+  // Hold the process open for the server.
+  await new Promise(() => undefined);
+  return 0;
+}
+
+/**
+ * How to launch the shim, as a config must record it.
+ *
+ * This has to be a runnable pair, not just a path. An earlier version wrote
+ * `node .../src/shim-main.ts` into the user's config, which plain node cannot
+ * execute — the unit tests passed because they injected tsx explicitly, and
+ * only an end-to-end attach against a real config showed it. Prefer the built
+ * JS; fall back to tsx over the source for a dev checkout.
+ */
+function shimRunner(): { nodePath: string; shimPath: string } {
   const here = pathDirname(fileURLToPath(import.meta.url));
-  // Works from src (tsx) and from dist (built).
-  return pathJoin(here, here.endsWith('src') ? 'shim-main.ts' : 'shim-main.js');
+  const repoRoot = here.endsWith('dist') ? pathJoin(here, '..') : pathJoin(here, '..');
+
+  const built = pathJoin(repoRoot, 'dist', 'shim-main.js');
+  if (existsSync(built)) return { nodePath: process.execPath, shimPath: built };
+
+  const sameDirJs = pathJoin(here, 'shim-main.js');
+  if (existsSync(sameDirJs)) return { nodePath: process.execPath, shimPath: sameDirJs };
+
+  const tsx = pathJoin(repoRoot, 'node_modules', '.bin', 'tsx');
+  const srcTs = pathJoin(here, 'shim-main.ts');
+  if (existsSync(tsx) && existsSync(srcTs)) return { nodePath: tsx, shimPath: srcTs };
+
+  throw new Error('cannot locate a runnable shim; run `npm run build` first');
 }
 
 function flag(argv: string[], name: string): string | undefined {
@@ -94,9 +146,11 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     try {
+      const runner = shimRunner();
       const r = attach(config, {
         logDir: log,
-        shimPath: shimEntryPoint(),
+        shimPath: runner.shimPath,
+        nodePath: runner.nodePath,
         ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
         ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
       });
@@ -140,11 +194,23 @@ async function main(argv: string[]): Promise<number> {
       const r = generateDemoSession(dir);
       process.stdout.write(
         `wrote ${r.events} events (${r.flagged} flagged) to ${r.dir}\n` +
-        `head: seq=${r.head.seq} hash=${r.head.hash}\n` +
-        'no checkpoints were cut; run `orisan-rec checkpoint` then `anchor`\n',
+        `head: seq=${r.head.seq} hash=${r.head.hash}\n`,
       );
+      if (flag(argv, '--with-ui') !== undefined || argv.includes('--with-ui')) {
+        // Cut a checkpoint so the UI has something beyond raw events. It stays
+        // unanchored, so the banner shows the honest grey state rather than a
+        // reassuring one — which is the point of demoing it at all.
+        const rec = Recorder.open(dir, { anchor: { enabled: false } });
+        await rec.cutCheckpoint('manual');
+        rec.close();
+        return await serveUi(dir, argv);
+      }
+      process.stdout.write('no checkpoints were cut; run `orisan-rec checkpoint` then `anchor`\n');
       return 0;
     }
+
+    case 'ui':
+      return await serveUi(dir, argv);
 
     case 'chain': {
       const { store, recovery } = EventStore.open(dir);

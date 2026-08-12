@@ -4,3 +4,5 @@ dist/
 .DS_Store
 # Scratch recordings produced by local runs / tests
 .orisan-scratch/
+ui/node_modules/
+ui/dist/
