@@ -5,7 +5,10 @@ A recorder for AI agent actions.
 Two properties are the point of this project, in order:
 
 1. **Discovery.** Find every agent and MCP server on the machine, so the record can
-   claim to be *complete*. (Slice R2, not built.)
+   claim to be *complete*. `orisan-rec scan` reads the known config locations for
+   seven surfaces, hunts stray `mcpServers` files nobody registered, and looks at
+   running processes. Every server carries how it was found. No competitor can
+   name an agent it was not told about.
 2. **Witnessed integrity.** Make the log expensive to rewrite even for the person
    who owns the machine it runs on. (Slices R1.3–R1.5, built; see the exact claim
    below.)
@@ -74,11 +77,41 @@ or the guarantees above degrade to "no careless tampering found":
 
 ## Quick start
 
-    npm install
-    npx tsx src/cli.ts demo /tmp/session
-    npx tsx src/cli.ts checkpoint /tmp/session --key ~/.orisan/signing.key
+    npm install && npm run build:ui
+
+    npx tsx src/cli.ts scan                       # what is on this machine
+    npx tsx src/cli.ts demo /tmp/session --with-ui  # seeded session + UI, no agents needed
+
+    # record a real agent
+    npx tsx src/cli.ts attach "<mcp config>" --log /tmp/session --key ~/.orisan/signing.key
+    npx tsx src/cli.ts detach "<mcp config>"      # restores byte-identical
+
+    npx tsx src/cli.ts checkpoint /tmp/session
     npx tsx src/cli.ts anchor /tmp/session
     npx tsx src/cli.ts verify /tmp/session --tsa-ca ca.pem --witness ~/witness.jsonl
+
+## The local UI
+
+`orisan-rec ui <dir>` serves http://127.0.0.1:4173 — Agents, Sessions, Timeline,
+Evidence. It binds loopback only and has **no authentication**: the binding is the
+access control, and requests without a loopback `Host` header are refused so a
+rebinding page cannot drive the API from a browser tab.
+
+The integrity banner has exactly three states, mapped from `verify`'s exit code:
+green only at 0, red at 1, grey at 2 — and an unrecognised code falls back to grey.
+Today, with no witness configured, it shows **grey "Cannot prove completeness"**,
+never green. A test greps the built UI bundle for false-confidence strings.
+
+## Attach / detach
+
+`attach` rewrites an MCP config so each stdio server runs behind a passthrough
+shim. The backup is written before the original is touched; `detach` restores it
+**byte-identically** and throws if it cannot.
+
+The shim forwards stdio first and records afterwards, always. If recording fails —
+disk full, unwritable log, a bug in us — the agent still works. That is the
+opposite of the recorder core, where a failed append is fatal, and both directions
+are deliberate: here the user's workflow wins, there the evidence does.
 
 ## Status
 
@@ -89,7 +122,11 @@ or the guarantees above degrade to "no careless tampering found":
 | R1.3 | Merkle roots, signed checkpoints, RFC 3161 anchoring, witness | done |
 | R1.4 | `verify` | done |
 | R1.5 | `demo` | done |
-| R2 | Discovery, attach/detach, local UI | not started |
+| R2.1 | Discovery scan | done |
+| R2.2 | attach / detach + passthrough shim | done |
+| R2.3 | Local UI, evidence export | done |
+| R2.4 | Integrity banner | done |
+| — | Witness service, kill switch | not started |
 
 `SECURITY-REVIEW-R1.md` records an adversarial review that found five routes to
 exit 0 on a tampered log. All five are closed and all five are permanent tests.
@@ -109,8 +146,16 @@ the list of what was wrong is more useful than a claim that nothing is.
     src/witness.ts    external witness log
     src/recorder.ts   store + checkpoint cadence
     src/verify.ts     the verify command
+    src/discover.ts   R2 discovery scan
+    src/attach.ts     R2 config rewrite / restore
+    src/shim.ts       R2 stdio passthrough recorder
+    src/server.ts     R2 local UI server (loopback only)
+    src/banner.ts     R2 integrity banner  [Tier C]
+    src/bundle.ts     R2 evidence bundle
+    src/zip.ts        minimal zip writer
     src/demo.ts       fake session generator
     src/cli.ts        CLI surface
+    ui/               React + Vite single page
 
 ## Development
 
