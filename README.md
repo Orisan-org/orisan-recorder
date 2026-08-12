@@ -31,7 +31,9 @@ detects:**
 | Deleting a checkpoint from the middle | checkpoint chain: index gap, seq discontinuity |
 | A `count: 0` checkpoint over a huge range | `count >= 1` is enforced |
 | Erasing everything and starting over | witness, and `count >= 1` |
-| Deleting the tail — events, checkpoint and anchors together | **witness only** |
+| Deleting the tail — events, checkpoint and anchors together | **witness only** — `truncation_detected` |
+| Re-sealing and re-submitting to the witness | witness records a fork — `fork_detected` |
+| Substituting a different witness | the witness key is pinned at registration |
 | Re-anchoring old events today | attested `genTime`, 1-hour window |
 | Swapping in another authority's timestamp | `--tsa` pinning |
 | A `PATH` shim standing in for openssl | openssl resolved to an absolute path |
@@ -45,7 +47,8 @@ detects:**
 - **Completeness without a witness.** A self-held log cannot detect suffix
   deletion: truncating the trailing events together with the checkpoints covering
   them leaves a valid prefix, indistinguishable from a log that ended earlier.
-  Run without `--witness` and `verify` returns exit 2, never 0, and says why.
+  With no witness `verify` returns exit 2, never 0, and says why. Register one
+  with `orisan-rec witness register` — see `~/Orisan/orisan-witness`.
 - **Anything about a witness the operator can rewrite.** A witness inside the log
   directory is reported and not counted.
 - **That the timestamp is genuine.** We never verify our own time proof. `verify`
@@ -70,7 +73,10 @@ corrupt file all yield 2. Reaching 0 requires every check to have actually run.
 Three things must live somewhere the recorder's operator cannot silently rewrite,
 or the guarantees above degrade to "no careless tampering found":
 
-- **the witness log** (`--witness`) — the only defence against tail truncation
+- **the witness** (`orisan-rec witness register --url …`) — the only defence
+  against tail truncation. Its key is pinned at registration and never
+  re-learned; a response signed by another key fails hard as an attack.
+  A local `--witness <file>` is the weaker, self-hosted form.
 - **the signing key** (`--key`, default `~/.orisan/signing.key`) — a key beside the
   data lets whoever rewrites the log re-sign it; `verify` reports it if it finds one
 - **the TSA** (`--tsa`) — an operator-chosen authority proves nothing
@@ -126,7 +132,8 @@ are deliberate: here the user's workflow wins, there the evidence does.
 | R2.2 | attach / detach + passthrough shim | done |
 | R2.3 | Local UI, evidence export | done |
 | R2.4 | Integrity banner | done |
-| — | Witness service, kill switch | not started |
+| W1 | External witness: register, submit, verify against it | done |
+| — | Kill switch | not started |
 
 `SECURITY-REVIEW-R1.md` records an adversarial review that found five routes to
 exit 0 on a tampered log. All five are closed and all five are permanent tests.
@@ -151,6 +158,7 @@ the list of what was wrong is more useful than a claim that nothing is.
     src/shim.ts       R2 stdio passthrough recorder
     src/server.ts     R2 local UI server (loopback only)
     src/banner.ts     R2 integrity banner  [Tier C]
+    src/witness-service.ts  W1 witness client, pinned key  [Tier C]
     src/bundle.ts     R2 evidence bundle
     src/zip.ts        minimal zip writer
     src/demo.ts       fake session generator
