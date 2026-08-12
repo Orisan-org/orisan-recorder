@@ -1,0 +1,24 @@
+{
+  "name": "orisan-recorder",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Recorder for AI agent actions: discovery-led capture with witnessed, non-forgeable integrity.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "bin": { "orisan-rec": "./dist/cli.js" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
