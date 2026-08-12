@@ -7,6 +7,8 @@
  */
 
 import { generateDemoSession } from './demo.js';
+import { scan, serverCount } from './discover.js';
+import { writeFileSync } from 'node:fs';
 import { EventIndex } from './index-db.js';
 import { EventStore } from './store.js';
 import { Recorder } from './recorder.js';
@@ -19,6 +21,7 @@ function usage(): string {
     'orisan-rec — recorder for AI agent actions',
     '',
     'Usage:',
+    '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
     '  orisan-rec demo <dir>                     write a fabricated 40-event session',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
@@ -44,6 +47,33 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(usage());
     return 0;
   }
+  if (cmd === 'scan') {
+    const result = scan();
+    const out = flag(argv, '--out');
+    if (out !== undefined) {
+      writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);
+    }
+
+    const total = serverCount(result);
+    process.stdout.write(`scanned ${result.home} (${result.platform})\n\n`);
+    if (result.surfaces.length === 0) {
+      process.stdout.write('  no agents or MCP servers found\n');
+    }
+    for (const s of result.surfaces) {
+      process.stdout.write(`  ${s.surface}${s.config_path ? `  ${s.config_path}` : ''}\n`);
+      if (s.servers.length === 0) process.stdout.write('    (configured, no servers)\n');
+      for (const srv of s.servers) {
+        const where = srv.source === 'process' ? `pid ${srv.pid}` : 'config';
+        process.stdout.write(`    ${srv.name.padEnd(24)} ${srv.command} ${srv.args.join(' ')}`.trimEnd() + `  [${where}]\n`);
+      }
+    }
+    process.stdout.write(`\n  ${total} server(s) across ${result.surfaces.length} surface(s)\n`);
+    for (const g of result.gaps) process.stdout.write(`  GAP: ${g}\n`);
+    if (out !== undefined) process.stdout.write(`\n  wrote ${out}\n`);
+    // Discovery finding nothing is a legitimate answer, not an error.
+    return 0;
+  }
+
   if (!dir) {
     process.stderr.write(`${cmd} requires a directory\n`);
     return 2;
