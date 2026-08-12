@@ -227,3 +227,18 @@ describe('the witness', () => {
     expect(r.findings.some((f) => f.code === 'witness_link_mismatch')).toBe(true);
   });
 });
+
+describe('Merkle leaves are recomputed from content', () => {
+  it('an event edited while keeping its stored hash breaks the anchored root', async () => {
+    await honestLog(20, 10);
+    const all = EventStore.open(dir).store.readAll();
+    // Edit the payload, leave `hash` untouched. Previously the Merkle root was
+    // built from that stale hash, so this passed the anchored check entirely.
+    const edited = all.map((e) => (e.seq === 5 ? { ...e, outcome: 'ok (actually failed)' } : e));
+    writeFileSync(join(dir, segmentName(0)), edited.map((e) => `${JSON.stringify(e)}\n`).join(''));
+
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.exitCode).toBe(EXIT_TAMPERED);
+    expect(r.findings.some((f) => f.code === 'checkpoint_root_mismatch')).toBe(true);
+  });
+});

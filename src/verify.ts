@@ -37,7 +37,13 @@ import { merkleRoot } from './merkle.js';
 import { EventStore } from './store.js';
 import { anchorPaths, readAnchor } from './tsa.js';
 import { highestWitnessedIndex, readWitness, verifyAgainstWitness } from './witness.js';
-import type { RecordedEvent } from './schema.js';
+import { computeEventHash, type RecordedEvent } from './schema.js';
+
+/** An event minus its stored hash, ready for recomputation. */
+function stripHash(e: RecordedEvent): Omit<RecordedEvent, 'hash'> {
+  const { hash: _drop, ...rest } = e;
+  return rest;
+}
 
 export const EXIT_CLEAN = 0;
 export const EXIT_TAMPERED = 1;
@@ -114,7 +120,13 @@ function checkCheckpointAgainstEvents(
     };
   }
 
-  const actual = merkleRoot(inRange.map((e) => e.hash));
+  // Leaves are RECOMPUTED from event content, never taken from the stored
+  // e.hash. Trusting the stored field meant the anchored root committed to
+  // *claimed* digests: edit an event's outcome, leave its hash alone, and the
+  // Merkle check passed unchanged — only the step-1 chain walk objected. The
+  // externally anchored layer must confirm content independently or it adds
+  // nothing the chain did not already provide.
+  const actual = merkleRoot(inRange.map((e) => computeEventHash(stripHash(e))));
   if (actual !== cp.merkle_root) {
     return {
       severity: 'tampered',
