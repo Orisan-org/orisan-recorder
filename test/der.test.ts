@@ -109,3 +109,21 @@ describe('RFC 3161 response status', () => {
     expect(() => readResponseStatus(Buffer.from([0x04, 0x01, 0x00]))).toThrow(/not a SEQUENCE/);
   });
 });
+
+describe('regression: signed-shift length overflow (SECURITY-REVIEW-R1)', () => {
+  it('rejects a 4-byte length with the high bit set instead of going negative', () => {
+    expect(() => readTlv(Buffer.from('3084ffffffff', 'hex'))).toThrow(/exceeds|invalid DER length/);
+    expect(() => readTlv(Buffer.from('308480000000', 'hex'))).toThrow(/exceeds|invalid DER length/);
+  });
+
+  it('rejects a length larger than the buffer', () => {
+    expect(() => readTlv(Buffer.from('308300ffff', 'hex'))).toThrow(/exceeds/);
+  });
+
+  it('the crafted 16-byte "granted" response no longer parses as granted', () => {
+    // Previously: negative length let this read as PKIStatus 0 with a token,
+    // so anchorCheckpoint wrote it to disk as a valid .tsr.
+    const evil = Buffer.from('300c3084ffffffff0201003003020105', 'hex');
+    expect(() => readResponseStatus(evil)).toThrow();
+  });
+});

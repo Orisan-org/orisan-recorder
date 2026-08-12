@@ -87,7 +87,15 @@ function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value && typeof value === 'object') {
     const src = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
+    // Object.create(null), not {}. With a normal object literal, assigning the
+    // key "__proto__" hits Object.prototype's setter: no own property is
+    // created and the key VANISHES from the canonical string. JSON.parse makes
+    // __proto__ a real own property, so it survives in the file — meaning
+    // {"a":1} and {"a":1,"__proto__":{...}} hashed identically and arbitrary
+    // content could be parked inside an anchored event, uncommitted by the
+    // chain hash, the Merkle root, the signature and the timestamp.
+    // A null-prototype target has no such setter, so the key is data.
+    const out = Object.create(null) as Record<string, unknown>;
     for (const k of Object.keys(src).sort()) out[k] = sortKeys(src[k]);
     return out;
   }
@@ -150,6 +158,14 @@ export function buildEvent(input: EventInput, seq: number, prevHash: string): Re
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
+/** Exactly the keys a v1 event may carry. Anything else is rejected. */
+const ALLOWED_EVENT_KEYS: ReadonlySet<string> = new Set([
+  'v', 'seq', 'event_id', 'ts', 'clock_source', 'actor', 'kind', 'target',
+  'args_digest', 'payload_ref', 'outcome', 'duration_ms', 'prev_hash', 'hash',
+]);
+
+const ALLOWED_ACTOR_KEYS: ReadonlySet<string> = new Set(['human', 'agent_id', 'tool']);
+
 /** Structural validation. Wrong shape is a different failure from a broken chain. */
 export function validateEvent(value: unknown): asserts value is RecordedEvent {
   const e = value as Partial<RecordedEvent> | null;
@@ -160,11 +176,23 @@ export function validateEvent(value: unknown): asserts value is RecordedEvent {
   if (typeof e.ts !== 'string' || Number.isNaN(Date.parse(e.ts))) throw new Error('ts must be an ISO timestamp');
   if (!CLOCK_SOURCES.includes(e.clock_source as ClockSource)) throw new Error('unknown clock_source');
   if (!EVENT_KINDS.includes(e.kind as EventKind)) throw new Error(`unknown kind: ${String(e.kind)}`);
+  // Unknown keys are rejected outright. An event that carries a field the hash
+  // does not cover is a field an attacker can edit freely afterwards; there is
+  // no benign reason for one to exist.
+  for (const k of Object.keys(e as object)) {
+    if (!ALLOWED_EVENT_KEYS.has(k)) throw new Error(`unknown event field: ${k}`);
+  }
   const a = e.actor as Actor | undefined;
   if (!a || typeof a !== 'object') throw new Error('actor must be an object');
+  for (const k of Object.keys(a)) {
+    if (!ALLOWED_ACTOR_KEYS.has(k)) throw new Error(`unknown actor field: ${k}`);
+  }
   if (typeof a.agent_id !== 'string' || a.agent_id.length === 0) throw new Error('actor.agent_id must be a non-empty string');
   if (a.human !== null && typeof a.human !== 'string') throw new Error('actor.human must be a string or null');
   if (a.tool !== null && typeof a.tool !== 'string') throw new Error('actor.tool must be a string or null');
+  if (e.target !== null && typeof e.target !== 'string') throw new Error('target must be a string or null');
+  if (e.outcome !== null && typeof e.outcome !== 'string') throw new Error('outcome must be a string or null');
+  if (e.payload_ref !== null && !HEX64.test(String(e.payload_ref))) throw new Error('payload_ref must be sha256 hex or null');
   if (e.args_digest !== null && !HEX64.test(String(e.args_digest))) throw new Error('args_digest must be sha256 hex or null');
   if (e.duration_ms !== null && !Number.isFinite(e.duration_ms as number)) throw new Error('duration_ms must be a number or null');
   if (!HEX64.test(String(e.prev_hash))) throw new Error('prev_hash must be sha256 hex');

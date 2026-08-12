@@ -165,3 +165,43 @@ describe('verifyChain', () => {
     expect(verifyChain(forged)).toEqual([]);
   });
 });
+
+describe('regression: canonicalJson __proto__ collision (SECURITY-REVIEW-R1)', () => {
+  it('a __proto__ key changes the canonical output instead of vanishing', () => {
+    const plain = JSON.parse('{"a":1}') as unknown;
+    const poisoned = JSON.parse('{"a":1,"__proto__":{"evil":1}}') as unknown;
+    expect(canonicalJson(plain)).not.toBe(canonicalJson(poisoned));
+  });
+
+  it('two different __proto__ payloads are distinguishable', () => {
+    const a = JSON.parse('{"a":1,"__proto__":{"x":1}}') as unknown;
+    const b = JSON.parse('{"a":1,"__proto__":{"x":2}}') as unknown;
+    expect(canonicalJson(a)).not.toBe(canonicalJson(b));
+  });
+
+  it('does not pollute Object.prototype while canonicalising', () => {
+    canonicalJson(JSON.parse('{"__proto__":{"polluted":"yes"}}'));
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined();
+  });
+
+  it('validateEvent rejects an event carrying a __proto__ field outright', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const smuggled = JSON.parse(
+      JSON.stringify(e).replace('{', '{"__proto__":{"outcome":"ok"},'),
+    ) as unknown;
+    expect(() => validateEvent(smuggled)).toThrow(/unknown event field/);
+  });
+
+  it('validateEvent rejects any unknown field, and unknown actor fields', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    expect(() => validateEvent({ ...e, extra: 1 })).toThrow(/unknown event field: extra/);
+    expect(() => validateEvent({ ...e, actor: { ...e.actor, spoof: 'x' } })).toThrow(/unknown actor field: spoof/);
+  });
+
+  it('validateEvent type-checks target, outcome and payload_ref', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    expect(() => validateEvent({ ...e, target: 42 })).toThrow(/target must be a string or null/);
+    expect(() => validateEvent({ ...e, outcome: { a: 1 } })).toThrow(/outcome must be a string or null/);
+    expect(() => validateEvent({ ...e, payload_ref: 'not-a-digest' })).toThrow(/payload_ref must be sha256 hex/);
+  });
+});

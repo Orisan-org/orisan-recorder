@@ -138,3 +138,26 @@ describe('this module never judges a TSA signature', () => {
     expect(names).not.toMatch(/verifyToken|verifyTsa|checkSignature/i);
   });
 });
+
+describe('regression: a malformed reply must never become an anchor (SECURITY-REVIEW-R1)', () => {
+  it('the crafted negative-length response is rejected and the checkpoint stays queued', async () => {
+    const cp = cpFor(dir);
+    // 16 bytes that used to read as PKIStatus 0 with a token present.
+    const evil = Buffer.from('300c3084ffffffff0201003003020105', 'hex');
+    const r = await anchorCheckpoint(dir, cp, { fetchImpl: fetchReturning(evil) });
+
+    expect(r.ok).toBe(false);
+    expect(hasAnchor(dir, cp.seq_to)).toBe(false);
+    // The queue is derived from what is missing, so it must still list this one.
+    // Otherwise one bad reply permanently stops us re-asking the real TSA.
+    expect(pendingAnchors(dir, [cp])).toHaveLength(1);
+  });
+
+  it('a later good reply still anchors it', async () => {
+    const cp = cpFor(dir);
+    await anchorCheckpoint(dir, cp, { fetchImpl: fetchReturning(Buffer.from('300c3084ffffffff0201003003020105', 'hex')) });
+    expect(pendingAnchors(dir, [cp])).toHaveLength(1);
+    await anchorCheckpoint(dir, cp, { fetchImpl: fetchReturning(fakeResp(0)) });
+    expect(pendingAnchors(dir, [cp])).toHaveLength(0);
+  });
+});

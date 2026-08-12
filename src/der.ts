@@ -108,8 +108,15 @@ export function readTlv(buf: Buffer, offset = 0): DerNode {
     const numBytes = first & 0x7f;
     if (numBytes === 0 || numBytes > 4) throw new Error(`unsupported DER length of ${numBytes} bytes`);
     if (offset + 2 + numBytes > buf.length) throw new Error('truncated DER: length bytes');
+    // `length << 8` is SIGNED 32-bit arithmetic: a 4-byte length with the high
+    // bit set produced a NEGATIVE length that slipped past the `end >
+    // buf.length` guard, so 16 bytes of garbage read as a granted timestamp
+    // response and got written to disk as a valid anchor. Multiply instead, and
+    // range-check explicitly.
     length = 0;
-    for (let i = 0; i < numBytes; i++) length = (length << 8) | buf[offset + 2 + i]!;
+    for (let i = 0; i < numBytes; i++) length = length * 256 + buf[offset + 2 + i]!;
+    if (!Number.isSafeInteger(length) || length < 0) throw new Error('invalid DER length');
+    if (length > buf.length) throw new Error(`DER length ${length} exceeds the ${buf.length}-byte buffer`);
     valueStart = offset + 2 + numBytes;
   }
 
