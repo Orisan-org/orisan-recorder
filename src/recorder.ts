@@ -10,6 +10,7 @@ import { DEFAULT_CHECKPOINT_INTERVAL, appendCheckpoint, buildCheckpoint, generat
 import { EventStore, type StoreOptions } from './store.js';
 import { anchorCheckpoint, type AnchorOptions } from './tsa.js';
 import { witnessCheckpoint } from './witness.js';
+import { readWitnessConfig, submitCheckpoint, type WitnessConfig } from './witness-service.js';
 import type { EventInput, RecordedEvent } from './schema.js';
 import { existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -25,6 +26,8 @@ export interface RecorderOptions extends StoreOptions {
    * Without it, tail truncation is undetectable and verify cannot return clean.
    */
   witnessFile?: string;
+  /** Set false to skip witness submission (used by offline-only commands). */
+  submitToWitness?: boolean;
   /**
    * Where the signing private key lives. Defaults to ~/.orisan/signing.key —
    * deliberately NOT the log directory, because a key stored beside the data
@@ -45,6 +48,7 @@ export class Recorder {
   private readonly interval: number;
   private readonly anchorOpts: AnchorOptions & { enabled: boolean };
   private readonly witnessFile: string | undefined;
+  private readonly witnessService: WitnessConfig | null;
   /** seq of the last event already covered by a checkpoint. */
   private lastCheckpointedSeq: number;
   /** The tail of the checkpoint chain, so the next one can link to it. */
@@ -58,6 +62,8 @@ export class Recorder {
     if (this.interval < 1) throw new Error('checkpointInterval must be >= 1');
     this.anchorOpts = { enabled: true, ...(opts.anchor ?? {}) };
     this.witnessFile = opts.witnessFile;
+    // Present only if `orisan-rec witness register` has run for this log.
+    this.witnessService = opts.submitToWitness === false ? null : readWitnessConfig(dir);
 
     const cps = readCheckpoints(dir);
     this.lastCheckpoint = cps.length ? cps[cps.length - 1]! : null;
@@ -107,6 +113,18 @@ export class Recorder {
       // Deliberately ignoring the result: an unreachable TSA must never stop
       // recording. The gap shows up as an unanchored checkpoint at verify time.
       await anchorCheckpoint(this.dir, cp, this.anchorOpts);
+    }
+
+    if (this.witnessService) {
+      // Same posture as the TSA: an unreachable witness must not stop
+      // recording. A missing receipt leaves the checkpoint queued, and verify
+      // reports it as not-yet-witnessed rather than as tampering. A key
+      // mismatch is different — that throws, and is meant to.
+      try {
+        await submitCheckpoint(this.dir, this.witnessService, this.key, cp);
+      } catch (e) {
+        if ((e as Error).name === 'WitnessKeyMismatch') throw e;
+      }
     }
     return cp;
   }

@@ -13,6 +13,13 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'orisan-demo-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('demo session', () => {
+  it('the default start is recent enough to anchor inside the freshness window', () => {
+    generateDemoSession(dir);
+    const events = EventStore.open(dir, { readOnly: true }).store.readAll();
+    const newest = Date.parse(events[events.length - 1]!.ts);
+    expect(Date.now() - newest).toBeLessThan(60 * 60 * 1000);
+  });
+
   it('ACCEPTANCE: writes 40 events with model calls, tool calls and one flag', () => {
     const r = generateDemoSession(dir);
     expect(r.events).toBe(DEMO_EVENT_COUNT);
@@ -41,11 +48,14 @@ describe('demo session', () => {
     index.close();
   });
 
-  it('is deterministic for a given seed and differs across seeds', () => {
-    const a = generateDemoSession(dir, { seed: 1 });
+  it('is deterministic for a given seed AND start, and differs across seeds', () => {
+    // The default start is "just before now" so a fresh demo can be anchored
+    // inside the freshness window; determinism is over seed + explicit start.
+    const startedAt = new Date('2026-08-12T09:00:00.000Z');
+    const a = generateDemoSession(dir, { seed: 1, startedAt });
     const other = mkdtempSync(join(tmpdir(), 'orisan-demo-'));
     try {
-      const b = generateDemoSession(other, { seed: 1 });
+      const b = generateDemoSession(other, { seed: 1, startedAt });
       // Same seed: identical targets and timings (event_id/ts aside, which are
       // driven by the seeded clock, so hashes match too).
       const ta = EventStore.open(dir).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
@@ -55,7 +65,7 @@ describe('demo session', () => {
 
       const third = mkdtempSync(join(tmpdir(), 'orisan-demo-'));
       try {
-        generateDemoSession(third, { seed: 2 });
+        generateDemoSession(third, { seed: 2, startedAt });
         const tc = EventStore.open(third).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
         expect(tc).not.toEqual(ta);
       } finally { rmSync(third, { recursive: true, force: true }); }

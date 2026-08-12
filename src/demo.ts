@@ -45,7 +45,14 @@ const MODELS = ['claude-sonnet-4-5', 'claude-opus-4-8'] as const;
 
 export interface DemoOptions {
   seed?: number;
-  /** Wall-clock start for the fabricated session. */
+  /**
+   * Wall-clock start. Defaults to just before now.
+   *
+   * It used to be a fixed date, which meant a demo session's events were hours
+   * old by the time anyone anchored them — and verify's freshness window then
+   * (correctly) called the anchor a re-anchoring. A demo that can only ever
+   * reach TAMPERED teaches the wrong thing about the tool.
+   */
   startedAt?: Date;
   count?: number;
 }
@@ -60,7 +67,9 @@ export function generateDemoSession(
 ): { events: number; flagged: number; dir: string; head: { seq: number; hash: string } } {
   const seed = opts.seed ?? 20260812;
   const count = opts.count ?? DEMO_EVENT_COUNT;
-  const start = opts.startedAt ?? new Date('2026-08-12T09:00:00.000Z');
+  // Land the last event a moment before now, so an anchor taken right after
+  // the demo is inside the freshness window.
+  const start = opts.startedAt ?? new Date(Date.now() - count * 1800);
   const rand = rng(seed);
 
   const { store } = EventStore.open(dir, { fsync: false });

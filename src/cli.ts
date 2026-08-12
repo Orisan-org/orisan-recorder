@@ -20,6 +20,11 @@ import { readCheckpoints } from './checkpoint.js';
 import { DEFAULT_TSA_URL, drainAnchorQueue, pendingAnchors } from './tsa.js';
 import { formatReport, verify } from './verify.js';
 import { DEFAULT_PORT, startServer } from './server.js';
+import {
+  fetchHead, pendingSubmissions, readWitnessConfig, registerLog, submitCheckpoint,
+  WitnessKeyMismatch,
+} from './witness-service.js';
+import { loadSigningKey } from './checkpoint.js';
 
 function usage(): string {
   return [
@@ -34,6 +39,8 @@ function usage(): string {
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
+    '  orisan-rec witness register <dir> --url <witness>   register and PIN the witness key',
+    '  orisan-rec witness submit <dir>           submit any unwitnessed checkpoints',
     '  orisan-rec verify <dir> [--tsa-ca <pem>] [--witness <file>] [--tsa <url>]',
     '                                            full verification',
     '',
@@ -184,6 +191,59 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  if (cmd === 'witness') {
+    const sub = argv[1];
+    const wdir = argv[2];
+    if (!sub || !wdir) { process.stderr.write('usage: orisan-rec witness <register|submit> <dir> [--url <witness>]\n'); return 2; }
+
+    if (sub === 'register') {
+      const url = flag(argv, '--url');
+      if (!url) { process.stderr.write('witness register requires --url\n'); return 2; }
+      const keyPath = flag(argv, '--key');
+      try {
+        const key = loadSigningKey(wdir, keyPath);
+        const cfg = await registerLog(wdir, key, { url });
+        process.stdout.write(
+          `registered with ${cfg.url}\n` +
+          `  log_id        ${cfg.log_id}\n` +
+          `  witness key   PINNED (${cfg.witness_pubkey_pem.split('\n')[1]?.slice(0, 24) ?? ''}…)\n` +
+          '  this key is never re-learned; a response signed by any other key is treated as an attack\n',
+        );
+        return 0;
+      } catch (e) {
+        process.stderr.write(`witness register failed: ${(e as Error).message}\n`);
+        return 2;
+      }
+    }
+
+    if (sub === 'submit') {
+      const cfg = readWitnessConfig(wdir);
+      if (!cfg) { process.stderr.write('no witness configured; run `orisan-rec witness register` first\n'); return 2; }
+      const key = loadSigningKey(wdir, flag(argv, '--key'));
+      const pending = pendingSubmissions(wdir, readCheckpoints(wdir));
+      if (pending.length === 0) { process.stdout.write('nothing pending: every checkpoint has a receipt\n'); return 0; }
+
+      let failed = 0;
+      for (const cp of pending) {
+        try {
+          const r = await submitCheckpoint(wdir, cfg, key, cp);
+          if (r.ok) process.stdout.write(`  index ${r.index}  witnessed\n`);
+          else { failed++; process.stderr.write(`  index ${cp.index}  NOT witnessed: ${r.error}\n`); }
+        } catch (e) {
+          if (e instanceof WitnessKeyMismatch) {
+            process.stderr.write(`\nATTACK: ${e.message}\n`);
+            return 1;
+          }
+          throw e;
+        }
+      }
+      return failed > 0 ? 2 : 0;
+    }
+
+    process.stderr.write(`unknown witness subcommand: ${sub}\n`);
+    return 2;
+  }
+
   if (!dir) {
     process.stderr.write(`${cmd} requires a directory\n`);
     return 2;
@@ -293,7 +353,22 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'verify': {
+      // A configured witness service is consulted automatically. Its absence is
+      // itself a finding, so there is no flag to forget.
+      const wcfg = readWitnessConfig(dir);
+      let witnessService;
+      if (wcfg) {
+        const fetched = await fetchHead(wcfg);
+        witnessService = {
+          logId: wcfg.log_id, url: wcfg.url,
+          reachable: fetched.reachable,
+          ...(fetched.error !== undefined ? { error: fetched.error } : {}),
+          ...(fetched.head !== undefined ? { head: fetched.head } : {}),
+          ...(fetched.signatureValid !== undefined ? { signatureValid: fetched.signatureValid } : {}),
+        };
+      }
       const report = verify(dir, {
+        ...(witnessService !== undefined ? { witnessService } : {}),
         ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
         ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
         ...(flag(argv, '--tsa') !== undefined ? { expectedTsaUrl: flag(argv, '--tsa')! } : {}),

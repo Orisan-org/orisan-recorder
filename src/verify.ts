@@ -97,14 +97,44 @@ export interface VerifyReport {
   attestedTimes: { checkpoint_seq_to: number; attested_at: string }[];
 }
 
+/**
+ * W1.5 — what the witness service told us, already fetched.
+ *
+ * verify() stays synchronous and pure: the caller does the network I/O and
+ * hands the result in. That keeps every decision below testable without a
+ * socket, which matters more here than anywhere else in the codebase.
+ */
+export interface WitnessServiceInput {
+  /** From witness.json in the log directory. */
+  logId: string;
+  url: string;
+  /** Whether the head could be fetched at all. */
+  reachable: boolean;
+  error?: string;
+  /** Whether the head's signature verified against the PINNED key. */
+  signatureValid?: boolean;
+  head?: {
+    log_id: string;
+    latest_index: number;
+    latest_seq_to: number;
+    merkle_root: string;
+    witnessed_at: string;
+    conflict: boolean;
+    conflict_count: number;
+  };
+}
+
 export interface VerifyOptions {
   /** CA bundle for the TSA. Without it the anchor check cannot run → exit 2. */
   tsaCaFile?: string;
   /**
-   * External witness log. Without one, completeness cannot be established and
-   * a clean verdict is unreachable — tail truncation leaves a valid prefix.
+   * External witness LOG FILE — the weaker, self-hosted form. Without either
+   * this or a witness service, completeness cannot be established and a clean
+   * verdict is unreachable: tail truncation leaves a valid prefix.
    */
   witnessFile?: string;
+  /** External witness SERVICE head, already fetched by the caller. */
+  witnessService?: WitnessServiceInput;
   /** Override the openssl binary. Must be an absolute path. */
   opensslPath?: string;
   /** Expected TSA URL. An anchor recorded against any other authority is a finding. */
@@ -504,7 +534,102 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   // Nothing above can detect suffix deletion: truncating events together with
   // the checkpoints covering them leaves a valid prefix. Only a record held
   // outside the operator's control knows a later checkpoint ever existed.
-  if (opts.witnessFile === undefined) {
+  //
+  // W1.5: the service is the strong form. Its head is signed by a key pinned at
+  // registration, so a substituted witness cannot answer for it.
+  let serviceSatisfiesCompleteness = false;
+  if (opts.witnessService !== undefined) {
+    const ws = opts.witnessService;
+
+    if (!ws.reachable || !ws.head) {
+      // Unreachable is a gap, never a pass, and never an accusation: the
+      // network being down is not evidence of wrongdoing.
+      findings.push({
+        severity: 'cannot_verify',
+        code: 'witness_unreachable',
+        message:
+          `could not reach the witness at ${ws.url}: ${ws.error ?? 'unknown error'}. ` +
+          'Completeness cannot be established while the witness is unavailable.',
+      });
+    } else if (ws.signatureValid !== true) {
+      // A head that does not verify against the PINNED key is an attack, not a
+      // gap. Someone is answering for the witness who is not the witness.
+      findings.push({
+        severity: 'tampered',
+        code: 'witness_signature_invalid',
+        message:
+          `the head returned by ${ws.url} is not signed by the pinned witness key. ` +
+          'Either the witness was substituted or the response was forged; do not re-pin.',
+      });
+    } else if (ws.head.log_id !== ws.logId) {
+      findings.push({
+        severity: 'tampered',
+        code: 'witness_wrong_log',
+        message: `the witness answered for log ${ws.head.log_id}, not ${ws.logId}`,
+      });
+    } else if (ws.head.conflict) {
+      // The witness saw two different contents for one index: someone re-sealed
+      // the log and tried to have the new version witnessed.
+      findings.push({
+        severity: 'tampered',
+        code: 'fork_detected',
+        message:
+          `the witness has recorded ${ws.head.conflict_count} conflicting submission(s) for this log: ` +
+          'a checkpoint index was submitted twice with different content, which means the log was re-sealed',
+      });
+    } else {
+      const localMax = checkpoints.length ? Math.max(...checkpoints.map((c) => c.index)) : -1;
+      const localHeadSeq = events.length > 0 ? events[events.length - 1]!.seq : -1;
+
+      if (ws.head.latest_index > localMax) {
+        // THE A1 KILL. The witness remembers checkpoints this log no longer has.
+        const missing: number[] = [];
+        for (let i = localMax + 1; i <= ws.head.latest_index; i++) missing.push(i);
+        findings.push({
+          severity: 'tampered',
+          code: 'truncation_detected',
+          message:
+            `the witness holds checkpoint(s) ${missing.join(', ')} (up to seq ${ws.head.latest_seq_to}) ` +
+            `that are absent from this log, whose last checkpoint is index ${localMax} ` +
+            `and whose last event is seq ${localHeadSeq}; the tail was removed`,
+        });
+      } else {
+        const atIndex = checkpoints.find((c) => c.index === ws.head!.latest_index);
+        if (atIndex && atIndex.merkle_root !== ws.head.merkle_root) {
+          findings.push({
+            severity: 'tampered',
+            code: 'witness_mismatch',
+            message:
+              `checkpoint ${ws.head.latest_index} has merkle_root ${atIndex.merkle_root} locally but the ` +
+              `witness recorded ${ws.head.merkle_root}; the log was rewritten after being witnessed`,
+          });
+        } else if (atIndex && atIndex.seq_to !== ws.head.latest_seq_to) {
+          findings.push({
+            severity: 'tampered',
+            code: 'witness_mismatch',
+            message:
+              `checkpoint ${ws.head.latest_index} ends at seq ${atIndex.seq_to} locally but the witness ` +
+              `recorded ${ws.head.latest_seq_to}`,
+          });
+        } else if (ws.head.latest_index < localMax) {
+          // Local is ahead: checkpoints exist that were never witnessed. Not
+          // tampering — the queue may simply not have drained — but the log is
+          // not fully committed, so it cannot be clean.
+          findings.push({
+            severity: 'cannot_verify',
+            code: 'checkpoints_not_witnessed',
+            message:
+              `checkpoint(s) after index ${ws.head.latest_index} have not been submitted to the witness; ` +
+              'they are not externally committed yet',
+          });
+        } else {
+          serviceSatisfiesCompleteness = true;
+        }
+      }
+    }
+  }
+
+  if (opts.witnessFile === undefined && !serviceSatisfiesCompleteness && opts.witnessService === undefined) {
     findings.push({
       severity: 'cannot_verify',
       code: 'no_witness',
@@ -513,13 +638,13 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
         'deleting trailing events together with the checkpoints covering them leaves a ' +
         'valid prefix that is indistinguishable from a log that ended earlier',
     });
-  } else if (!existsSync(opts.witnessFile)) {
+  } else if (opts.witnessFile !== undefined && !existsSync(opts.witnessFile)) {
     findings.push({
       severity: 'cannot_verify',
       code: 'witness_missing',
       message: `witness log not found: ${opts.witnessFile}`,
     });
-  } else {
+  } else if (opts.witnessFile !== undefined) {
     const witness = readWitness(opts.witnessFile);
     if (witness.length === 0) {
       findings.push({
