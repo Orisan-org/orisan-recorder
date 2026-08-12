@@ -6,9 +6,10 @@ Two properties are the point of this project, in order:
 
 1. **Discovery.** We find every agent and MCP server on the machine, so the record
    can claim to be *complete*. (Slice R2.)
-2. **Witnessed integrity.** Our log cannot be forged by recomputing hashes, because
-   checkpoints are signed *and* anchored to an external RFC 3161 timestamp authority.
-   (Slice R1.3/R1.4.)
+2. **Witnessed integrity.** Checkpoints are signed and anchored to an external RFC
+   3161 timestamp authority. **This does not yet hold under a hostile operator** —
+   see `SECURITY-REVIEW-R1.md`. Do not repeat this as a guarantee until the fixes
+   listed there have landed.
 
 ## Why the hash chain alone is not enough
 
@@ -38,15 +39,19 @@ command it ran, so a reviewer trusts no code of ours for that step.
 | R1.4 | `verify` command | done (Tier C) |
 | R2 | Discovery, attach/detach, local UI | not started |
 
-All R1 acceptance tests pass, including the two that matter most, in
-`test/attacker.test.ts`: the recompute attack (delete events, re-seal the whole
-chain with our own hash function — `verify` exits 1 and names the checkpoint) and
-the TSA-unreachable case (recording continues, the checkpoint queues, `verify`
-exits 2 and never reports clean).
+All R1 acceptance tests pass, including `test/attacker.test.ts`: the recompute
+attack (delete events, re-seal the chain with our own hash function — `verify`
+exits 1 naming the checkpoint) and the TSA-unreachable case (recording continues,
+the checkpoint queues, `verify` exits 2 and never reports clean). Verified end to
+end against the live freetsa.org.
 
-Verified end to end against the live freetsa.org: `verify --tsa-ca` returns CLEAN
-(exit 0) on an intact log, and TAMPERED (exit 1) on the same log after the attack,
-while chain-only checking still reports it intact.
+**Those tests describe a careless attacker.** An adversarial review
+(`SECURITY-REVIEW-R1.md`) found five confirmed routes to `exit 0` on a tampered
+log, four needing no cryptography — the simplest is deleting trailing events
+together with the checkpoint and anchor that covered them. The root cause is that
+`verify` validates only what is present and nothing establishes what should be
+present. Until the fixes in that document land, read `exit 0` as "no careless
+tampering found", not as an integrity guarantee.
 
 ## Layout
 
@@ -71,6 +76,9 @@ while chain-only checking still reports it intact.
 
 Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine".
 A missing anchor, a missing public key, or an openssl that will not run all yield 2.
+
+Caveat from the review: a *deleted* anchor, together with its checkpoint and the
+events it covered, currently yields 0. That is the top open defect.
 
 ## Development
 
