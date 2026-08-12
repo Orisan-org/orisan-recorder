@@ -16,6 +16,19 @@ beforeEach(() => {
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('key file handling', () => {
+  it('declares the primitive it was made for', () => {
+    const kf = generateKeyFile(keyPath);
+    expect(kf.alg).toBe('crypto_box_seal');
+    expect(Buffer.from(kf.public_key, 'base64')).toHaveLength(32);
+    expect(Buffer.from(kf.private_key!, 'base64')).toHaveLength(32);
+  });
+
+  it('refuses a key file whose algorithm it does not implement', () => {
+    const kf = generateKeyFile(keyPath);
+    writeFileSync(keyPath, JSON.stringify({ ...kf, alg: 'rot13' }), { mode: 0o600 });
+    expect(() => loadKeyFile(keyPath)).toThrow(/unsupported key algorithm/);
+  });
+
   it('writes owner-only and round-trips through load', () => {
     const created = generateKeyFile(keyPath);
     expect(statSync(keyPath).mode & 0o777).toBe(0o600);
@@ -80,6 +93,8 @@ describe('sealing and opening', () => {
   });
 
   it('rejects a tampered blob even when renamed to its new content hash', () => {
+    // Content addressing is bypassed by the rename; sodium's own authentication
+    // is what must refuse here.
     const kf = generateKeyFile(keyPath);
     const ref = sealPayload(dir, kf, 'sensitive fake payload');
     const blob = readFileSync(join(dir, PAYLOAD_DIRNAME, `${ref}.blob`));
