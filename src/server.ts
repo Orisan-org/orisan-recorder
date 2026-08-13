@@ -204,7 +204,12 @@ export function createApp(opts: ServerOptions) {
             events: report.events,
             checkpoints: report.checkpoints,
             anchored: report.anchored,
-            witnessConfigured: opts.witnessFile !== undefined,
+            // A registered witness SERVICE counts, not just the local witness
+            // file. This reported false against a green banner that credited
+            // the witness by name — the Evidence screen then said "no witness
+            // configured" on a log that had one.
+            witnessConfigured:
+              opts.witnessFile !== undefined || readWitnessConfig(opts.logDir) !== null,
           });
           return;
         }

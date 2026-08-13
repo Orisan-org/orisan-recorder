@@ -27,7 +27,7 @@ import {
   fetchHead, pendingSubmissions, readWitnessConfig, registerLog, submitCheckpoint,
   WitnessKeyMismatch,
 } from './witness-service.js';
-import { loadSigningKey } from './checkpoint.js';
+import { generateSigningKey, loadSigningKey, signingKeyPath } from './checkpoint.js';
 
 function usage(): string {
   return [
@@ -234,7 +234,13 @@ async function main(argv: string[]): Promise<number> {
       if (!url) { process.stderr.write('witness register requires --url\n'); return 2; }
       const keyPath = flag(argv, '--key');
       try {
-        const key = loadSigningKey(wdir, keyPath);
+        // Registering is a reasonable FIRST action on a new log — you set the
+        // witness up before you record anything. The signing key does not
+        // exist yet at that point, so create it rather than failing with
+        // "signing key not found", which reads like a broken install.
+        const key = existsSync(signingKeyPath(wdir, keyPath))
+          ? loadSigningKey(wdir, keyPath)
+          : generateSigningKey(wdir, keyPath);
         const cfg = await registerLog(wdir, key, { url });
         process.stdout.write(
           `registered with ${cfg.url}\n` +
