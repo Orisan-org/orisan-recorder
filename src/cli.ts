@@ -37,7 +37,7 @@ function usage(): string {
     '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
     '  orisan-rec detach <config>                restore the original config exactly',
     '  orisan-rec demo <dir> [--with-ui]         write a fabricated session, optionally open the UI',
-    '  orisan-rec ui <dir> [--port N]            serve the local UI on 127.0.0.1',
+    '  orisan-rec ui <dir> [--port N] [--payload-key <p>]   serve the local UI',
     '  orisan-rec tap <dir> --upstream <url>     record model calls through an HTTP tap',
     '        [--port N] [--payload-key <path>] [--key <signing>] [--no-context]',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
@@ -66,6 +66,10 @@ async function serveUi(dir: string, argv: string[]): Promise<number> {
     ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
     ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
     ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
+    // Without this the interface shows that context was captured and encrypted,
+    // but cannot display it. That is the correct default: reading prompts
+    // should take a deliberate act.
+    ...(flag(argv, '--payload-key') !== undefined ? { payloadKeyPath: flag(argv, '--payload-key')! } : {}),
   });
   const url = `http://127.0.0.1:${bound}`;
   process.stdout.write(

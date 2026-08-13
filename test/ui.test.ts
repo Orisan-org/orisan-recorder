@@ -284,6 +284,42 @@ describe('v3: sessions in the API', () => {
     expect(((await r.json()) as { events: unknown[] }).events).toEqual([]);
   });
 
+  it('serves the screen copy and the glossary', async () => {
+    const r = await (await fetch(`${sbase}/api/explain`)).json() as {
+      screens: Record<string, { what: string; detail: string }>; glossary: { term: string; plain: string }[];
+    };
+    expect(Object.keys(r.screens).sort()).toEqual(['agents', 'evidence', 'sessions', 'timeline', 'trust']);
+    expect(r.glossary.length).toBeGreaterThan(4);
+    expect(r.glossary.every((g) => g.plain.length > 40)).toBe(true);
+  });
+
+  it('expands one event with its own code and the code it follows', async () => {
+    const r = await (await fetch(`${sbase}/api/events/0`)).json() as {
+      event: { hash: string; prev_hash: string; seq: number }; contextState: string;
+    };
+    expect(r.event.seq).toBe(0);
+    expect(r.event.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(r.event.prev_hash).toMatch(/^[0-9a-f]{64}$/);
+    // No key was given to this server, so context must not be readable.
+    expect(['not_captured', 'locked', 'none']).toContain(r.contextState);
+  });
+
+  it('404s an event that does not exist', async () => {
+    expect((await fetch(`${sbase}/api/events/99999`)).status).toBe(404);
+  });
+
+  it('runs the tamper demo on the real log without touching it', async () => {
+    const before = readFileSync(join(sdir, 'events-0000.jsonl'));
+    const r = await (await fetch(`${sbase}/api/prove`, { method: 'POST' })).json() as {
+      runs: { attack: string; detected: boolean; verdict: string }[]; sourceUntouched: boolean;
+    };
+    expect(readFileSync(join(sdir, 'events-0000.jsonl')).equals(before)).toBe(true);
+    expect(r.sourceUntouched).toBe(true);
+    expect(r.runs.map((x) => x.attack)).toEqual(['edit', 'delete_tail']);
+    // The edit attack is always caught; the delete one depends on a witness.
+    expect(r.runs.find((x) => x.attack === 'edit')!.detected).toBe(true);
+  });
+
   it('notices when the index has fallen behind, rather than serving a stale answer', async () => {
     // maintainIndex:false writes events the index has never seen — the same
     // state as a log written by an older build or copied in from elsewhere.
@@ -304,5 +340,72 @@ describe('v3: sessions in the API', () => {
     const r = await (await fetch(`${sbase}/api/sessions`)).json() as { sessions: { agents: string[] }[] };
     expect(r.sessions).toHaveLength(4);
     expect(r.sessions.some((s) => s.agents.includes('late'))).toBe(true);
+  });
+});
+
+describe('R4: the auditor README', () => {
+  it('is in the bundle', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    expect(AUDITOR_README.length).toBeGreaterThan(1000);
+  });
+
+  it('leads with what the bundle cannot prove', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    const cannotAt = AUDITOR_README.indexOf('cannot prove');
+    const canAt = AUDITOR_README.indexOf('What it can prove');
+    expect(cannotAt).toBeGreaterThan(-1);
+    expect(cannotAt).toBeLessThan(canAt);
+  });
+
+  it('names all three limits explicitly', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    expect(AUDITOR_README).toMatch(/reached the recorder/i);
+    expect(AUDITOR_README).toMatch(/deleted from the end/i);
+    expect(AUDITOR_README).toMatch(/correct or authorised/i);
+  });
+
+  it('tells the auditor to compare the stamp time against the records', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    expect(AUDITOR_README).toMatch(/Compare that time against the newest record/i);
+  });
+
+  it('says a failed check is not an accusation', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    expect(AUDITOR_README).toMatch(/fact, not an accusation/i);
+  });
+
+  it('makes no claim we cannot back', async () => {
+    const { AUDITOR_README } = await import('../src/bundle.js');
+    const lower = AUDITOR_README.toLowerCase();
+    for (const s of FALSE_CONFIDENCE_STRINGS) expect(lower).not.toContain(s);
+    for (const w of ['tamper-proof', 'guaranteed', 'unhackable', 'immutable']) {
+      expect(lower).not.toContain(w);
+    }
+  });
+
+  it('ships inside the exported zip', async () => {
+    const dir2 = mkdtempSync(join(tmpdir(), 'orisan-aud-'));
+    const key2 = mkdtempSync(join(tmpdir(), 'orisan-audkey-'));
+    try {
+      const rec = Recorder.open(dir2, {
+        fsync: false, anchor: { enabled: false },
+        signingKeyPath: join(key2, 'signing.key'), submitToWitness: false,
+      });
+      await rec.record({
+        actor: { human: 'a', agent_id: 'spiffe://x', tool: 't' }, kind: 'tool_call',
+        target: 'x', args_digest: null, payload_ref: null, outcome: 'ok', duration_ms: 1,
+      });
+      rec.close();
+
+      const zip = buildEvidenceBundle(dir2);
+      const out = mkdtempSync(join(tmpdir(), 'orisan-audzip-'));
+      try {
+        writeFileSync(join(out, 'b.zip'), zip);
+        execFileSync('unzip', ['-q', '-o', join(out, 'b.zip'), '-d', join(out, 'x')]);
+        expect(readdirSync(join(out, 'x'))).toContain('AUDITOR-README.md');
+      } finally { rmSync(out, { recursive: true, force: true }); }
+    } finally {
+      for (const d of [dir2, key2]) rmSync(d, { recursive: true, force: true });
+    }
   });
 });

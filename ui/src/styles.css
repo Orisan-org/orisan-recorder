@@ -66,3 +66,48 @@ tr.flagged td { color: var(--amber-fg); }
 .session-head .id { font-weight: 650; color: var(--fg); }
 .session-head .meta { color: var(--muted); font-size: 12.5px; margin-left: auto; }
 .session-head .flag-count { color: var(--amber-fg); font-weight: 600; }
+
+/* --- explainability ------------------------------------------------------ */
+.screen-what { color: var(--muted); margin: 0 0 6px; max-width: 68ch; line-height: 1.5; }
+.screen-more { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 13px; }
+.screen-detail { max-width: 68ch; line-height: 1.6; margin: 8px 0 18px; color: var(--fg);
+                 border-left: 2px solid var(--line); padding-left: 12px; }
+
+abbr.term { text-decoration: underline dotted var(--muted); cursor: help; text-underline-offset: 3px; }
+
+.banner { cursor: pointer; }
+.banner .toggle { font-size: 12.5px; opacity: .8; margin-top: 8px; }
+.banner-detail { margin-top: 12px; border-top: 1px solid currentColor; padding-top: 10px; }
+.banner-detail h4 { margin: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .85; }
+.banner-detail ul { margin: 0; padding-left: 18px; line-height: 1.55; }
+
+tr.row-open td { border-bottom: 0; }
+tr.expand td { background: var(--panel); padding: 0; }
+.expand-inner { padding: 14px 16px; }
+.expand-grid { display: grid; grid-template-columns: 140px 1fr; gap: 6px 14px; align-items: start; }
+.expand-grid dt { color: var(--muted); font-size: 12.5px; }
+.expand-grid dd { margin: 0; }
+.ctx { background: #fff; border: 1px solid var(--line); border-radius: 4px;
+       padding: 10px; max-height: 300px; overflow: auto; white-space: pre-wrap;
+       word-break: break-word; font-size: 12px; }
+.ctx-note { color: var(--muted); }
+.clickable { cursor: pointer; }
+
+.prove-run { border: 1px solid var(--line); border-radius: 6px; margin: 14px 0; }
+.prove-run h3 { margin: 0; padding: 10px 14px; font-size: 14px; background: var(--panel);
+                border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; }
+.prove-body { padding: 12px 14px; }
+.prove-step { display: grid; grid-template-columns: 24px 1fr; gap: 10px; margin-bottom: 10px; line-height: 1.5; }
+.prove-step .mark { font-weight: 700; }
+.mark-yes { color: var(--green-fg); }
+.mark-no  { color: var(--muted); }
+.prove-verdict { margin-top: 10px; padding: 10px 12px; border-radius: 5px; line-height: 1.55; }
+.verdict-caught { background: var(--green-bg); border: 1px solid var(--green-line); color: var(--green-fg); }
+.verdict-open   { background: var(--grey-bg);  border: 1px solid var(--grey-line);  color: var(--grey-fg); }
+
+.tour { position: fixed; inset: 0; background: rgba(20,23,26,.45); display: grid; place-items: center; z-index: 10; }
+.tour-card { background: #fff; border-radius: 8px; max-width: 520px; padding: 24px 26px; }
+.tour-card h2 { margin: 0 0 10px; font-size: 18px; }
+.tour-card p { line-height: 1.6; margin: 0 0 12px; }
+.tour-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.tour-dots { color: var(--muted); font-size: 12.5px; margin-right: auto; align-self: center; }

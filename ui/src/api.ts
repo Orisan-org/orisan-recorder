@@ -3,7 +3,36 @@ export interface Banner {
   headline: string;
   detail: string;
   docsHref: string;
-  findings: { code: string; message: string }[];
+  findings: { code: string; message: string; plain: string }[];
+  means: string[];
+  doesNotMean: string[];
+}
+
+export interface GlossaryEntry { term: string; plain: string }
+export interface ScreenCopy { title: string; what: string; detail: string }
+export type ScreenName = 'agents' | 'sessions' | 'timeline' | 'evidence' | 'trust';
+
+export interface EventDetail {
+  event: {
+    seq: number; session_id: string; ts: string; kind: string; target: string | null;
+    outcome: string | null; duration_ms: number | null;
+    actor: { human: string | null; agent_id: string; tool: string | null };
+    args_digest: string | null; payload_ref: string | null;
+    hash: string; prev_hash: string;
+  };
+  contextState: 'none' | 'not_captured' | 'locked' | 'unlocked' | 'unreadable';
+  context: unknown;
+}
+
+export interface ProofStep { title: string; did: string; result: string; detected: boolean | null; codes: string[] }
+export interface ProofRun {
+  attack: 'edit' | 'delete_tail'; title: string; premise: string;
+  steps: ProofStep[]; verdict: string; detected: boolean;
+}
+export interface ProveResult {
+  ranAt: string; events: number; checkpoints: number; witnessConfigured: boolean;
+  baseline: { verdict: string; exitCode: number };
+  runs: ProofRun[]; sourceUntouched: boolean;
 }
 
 export interface Status {
@@ -51,6 +80,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
+  explain: () => get<{ screens: Record<ScreenName, ScreenCopy>; glossary: GlossaryEntry[] }>('/api/explain'),
+  eventDetail: (seq: number) => get<EventDetail>(`/api/events/${seq}`),
+  prove: () => post<ProveResult>('/api/prove', {}),
   status: () => get<Status>('/api/status'),
   scan: () => get<ScanResult>('/api/scan'),
   events: (sessionId?: string) => get<{ events: UiEvent[]; sessions: SessionSummary[]; checkpoints: number }>(

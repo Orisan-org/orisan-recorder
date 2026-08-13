@@ -33,12 +33,16 @@ describe('green is unreachable except from exit 0', () => {
   });
 });
 
-describe('the word "verified" is confined to green', () => {
-  it('green may say it', () => {
-    expect(bannerFor({ exitCode: 0, findings: [] }).headline.toLowerCase()).toContain('verified');
+describe('confident language is confined to green', () => {
+  it('green is the only verdict that claims anything', () => {
+    const g = bannerFor({ exitCode: 0, findings: [] });
+    expect(g.tone).toBe('green');
+    // Green states what was confirmed, and names the witness as the reason.
+    expect(g.detail).toMatch(/witness/i);
+    expect(g.means.join(' ')).toMatch(/removed/i);
   });
 
-  it('grey and red never say it, in any form', () => {
+  it('grey and red never say "verified", in any form', () => {
     for (const exitCode of [1, 2]) {
       const b = bannerFor({ exitCode, findings: [f('cannot_verify', 'no_witness')] });
       const text = `${b.headline} ${b.detail}`.toLowerCase();
@@ -55,22 +59,28 @@ describe('the word "verified" is confined to green', () => {
 });
 
 describe('grey admits rather than accuses', () => {
-  it('says nothing here claims the log was altered', () => {
+  it('leads by saying nothing has been found wrong', () => {
     const b = bannerFor({ exitCode: 2, findings: [f('cannot_verify', 'no_witness')] });
     expect(b.headline).toBe('Cannot prove completeness');
-    expect(b.detail).toMatch(/cannot rule it out/);
-    expect(b.detail).not.toMatch(/tamper/i);
+    expect(b.detail).toMatch(/[Nn]othing here has been found wrong/);
+    expect(b.detail).toMatch(/cannot rule out/);
+  });
+
+  it('spells out that this is not a finding of tampering', () => {
+    const b = bannerFor({ exitCode: 2, findings: [f('cannot_verify', 'no_witness')] });
+    expect(b.means.join(' ')).toMatch(/not a finding of tampering/i);
+    expect(b.doesNotMean.join(' ')).toMatch(/[Tt]reating this as an alarm/);
   });
 
   it('names the witness as the thing that would change the answer', () => {
     const b = bannerFor({ exitCode: 2, findings: [f('cannot_verify', 'no_witness')] });
-    expect(b.detail).toMatch(/witness/i);
+    expect(b.means.join(' ')).toMatch(/witness/i);
   });
 
-  it('a non-witness gap gets the generic wording, not a witness claim', () => {
-    const b = bannerFor({ exitCode: 2, findings: [f('cannot_verify', 'openssl_not_found')] });
-    expect(b.detail).not.toMatch(/witness/i);
-    expect(b.detail).toMatch(/unproven/);
+  it('translates each finding into plain English', () => {
+    const b = bannerFor({ exitCode: 2, findings: [f('cannot_verify', 'no_witness', 'raw technical text')] });
+    expect(b.findings[0]!.plain).toMatch(/deleted from the end/);
+    expect(b.findings[0]!.plain).not.toBe('raw technical text');
   });
 
   it('always links to the docs', () => {
@@ -84,14 +94,20 @@ describe('red names the finding', () => {
   it('leads with the first tampered finding', () => {
     const b = bannerFor({
       exitCode: 1,
-      findings: [f('cannot_verify', 'noise', 'ignore me'), f('tampered', 'witness_checkpoint_missing', 'the real one')],
+      findings: [f('cannot_verify', 'noise', 'ignore me'), f('tampered', 'truncation_detected', 'the real one')],
     });
-    expect(b.detail).toBe('the real one');
-    expect(b.findings.map((x) => x.code)).toContain('witness_checkpoint_missing');
+    expect(b.detail).toMatch(/deleted from the end/);
+    expect(b.findings.map((x) => x.code)).toContain('truncation_detected');
   });
 
   it('falls back to a plain statement if severity labels are missing', () => {
-    expect(bannerFor({ exitCode: 1, findings: [] }).detail).toMatch(/does not match/);
+    expect(bannerFor({ exitCode: 1, findings: [] }).detail).toMatch(/A check failed/);
+  });
+
+  it('says what red does not mean, so it is not read as an accusation of intent', () => {
+    const b = bannerFor({ exitCode: 1, findings: [f('tampered', 'chain_hash_mismatch')] });
+    expect(b.doesNotMean.join(' ')).toMatch(/who did it/);
+    expect(b.means.join(' ')).toMatch(/not a judgement about intent/);
   });
 });
 

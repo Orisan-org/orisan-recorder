@@ -19,6 +19,9 @@ import { extname, join, normalize } from 'node:path';
 
 import { attach, detach, discardBackup, isAttached } from './attach.js';
 import { bannerFor } from './banner.js';
+import { GLOSSARY, SCREENS } from './explain.js';
+import { prove } from './prove.js';
+import { loadKeyFile, openPayload } from './payloads.js';
 import { buildEvidenceBundle } from './bundle.js';
 import { scan } from './discover.js';
 import { EventIndex } from './index-db.js';
@@ -38,6 +41,8 @@ export interface ServerOptions {
   signingKeyPath?: string;
   witnessFile?: string;
   tsaCaFile?: string;
+  /** Payload key, so the UI can show what the agent actually saw. */
+  payloadKeyPath?: string;
 }
 
 const MIME: Record<string, string> = {
@@ -152,6 +157,61 @@ export function createApp(opts: ServerOptions) {
             anchored: report.anchored,
             witnessConfigured: opts.witnessFile !== undefined,
           });
+          return;
+        }
+
+        if (path === '/api/explain') {
+          json(res, 200, { screens: SCREENS, glossary: GLOSSARY });
+          return;
+        }
+
+        // One event, expanded: what the agent saw, decided, and received.
+        const detail = /^\/api\/events\/(\d+)$/.exec(path);
+        if (detail) {
+          const seq = Number.parseInt(detail[1]!, 10);
+          const event = existsSync(opts.logDir)
+            ? EventStore.open(opts.logDir, { readOnly: true }).store.readAll().find((e) => e.seq === seq)
+            : undefined;
+          if (!event) { json(res, 404, { error: `no event ${seq}` }); return; }
+
+          // Context is encrypted at rest. It is only decrypted here, on an
+          // explicit request, and only if the operator supplied the key.
+          let context: unknown = null;
+          let contextState = 'none';
+          if (event.payload_ref === null) {
+            contextState = 'not_captured';
+          } else if (!opts.payloadKeyPath || !existsSync(opts.payloadKeyPath)) {
+            contextState = 'locked';
+          } else {
+            try {
+              context = JSON.parse(
+                openPayload(opts.logDir, loadKeyFile(opts.payloadKeyPath), event.payload_ref).toString('utf8'),
+              ) as unknown;
+              contextState = 'unlocked';
+            } catch (e) {
+              contextState = 'unreadable';
+              context = { error: (e as Error).message };
+            }
+          }
+
+          json(res, 200, {
+            event: {
+              seq: event.seq, session_id: event.session_id, ts: event.ts, kind: event.kind,
+              target: event.target, outcome: event.outcome, duration_ms: event.duration_ms,
+              actor: event.actor, args_digest: event.args_digest, payload_ref: event.payload_ref,
+              hash: event.hash, prev_hash: event.prev_hash,
+            },
+            contextState,
+            context,
+          });
+          return;
+        }
+
+        if (path === '/api/prove' && req.method === 'POST') {
+          json(res, 200, prove(opts.logDir, {
+            ...(opts.tsaCaFile !== undefined ? { tsaCaFile: opts.tsaCaFile } : {}),
+            ...(opts.witnessFile !== undefined ? { witnessFile: opts.witnessFile } : {}),
+          }));
           return;
         }
 

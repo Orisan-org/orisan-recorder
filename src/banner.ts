@@ -1,3 +1,4 @@
+import { VERDICTS, explainFinding } from './explain.js';
 /**
  * R2.4 — the integrity banner. TIER C: read every line, and read the strings.
  *
@@ -40,7 +41,15 @@ export interface Banner {
   /** Where to read more. */
   docsHref: string;
   /** Findings worth naming, most important first. */
-  findings: { code: string; message: string }[];
+  findings: { code: string; message: string; plain: string }[];
+  /**
+   * What this verdict does and does not mean, for the expanded view.
+   *
+   * The banner is clickable precisely so `doesNotMean` gets read. A verdict
+   * without its limits is the thing every competitor ships.
+   */
+  means: string[];
+  doesNotMean: string[];
 }
 
 export interface BannerInput {
@@ -58,6 +67,7 @@ export const DOCS_HREF = 'https://github.com/orisan/orisan-recorder#what-verify-
  */
 export const FALSE_CONFIDENCE_STRINGS: readonly string[] = [
   'integrity verified',
+  'complete and unaltered',
   'no tampering detected',
   'tamper-proof',
   'tamper proof',
@@ -68,50 +78,50 @@ export const FALSE_CONFIDENCE_STRINGS: readonly string[] = [
 ];
 
 export function bannerFor(input: BannerInput): Banner {
-  const named = input.findings.map((f) => ({ code: f.code, message: f.message }));
+  const named = input.findings.map((f) => ({
+    code: f.code,
+    message: f.message,
+    plain: explainFinding(f.code, f.message),
+  }));
 
   if (input.exitCode === 1) {
     const worst = input.findings.filter((f) => f.severity === 'tampered');
     return {
       tone: 'red',
-      headline: 'TAMPERED',
-      detail:
-        worst.length > 0
-          ? worst[0]!.message
-          : 'This log does not match what was signed and externally timestamped.',
+      headline: VERDICTS.red.headline,
+      detail: worst.length > 0
+        ? explainFinding(worst[0]!.code, worst[0]!.message)
+        : VERDICTS.red.lead,
       docsHref: DOCS_HREF,
       findings: named,
+      means: [...VERDICTS.red.means],
+      doesNotMean: [...VERDICTS.red.doesNotMean],
     };
   }
 
   if (input.exitCode === 0) {
     return {
       tone: 'green',
-      headline: 'Integrity verified',
-      detail:
-        'Every check ran and passed: the chain is intact, every checkpoint is signed, and every '
-        + 'checkpoint is anchored to an external timestamp authority that accepted it.',
+      headline: VERDICTS.green.headline,
+      detail: VERDICTS.green.lead,
       docsHref: DOCS_HREF,
       findings: [],
+      means: [...VERDICTS.green.means],
+      doesNotMean: [...VERDICTS.green.doesNotMean],
     };
   }
 
   // Everything else — including any exit code we do not recognise — is grey.
   // Defaulting an unknown code to green would be the exact failure this file
   // exists to prevent, so the fallback leans the safe way.
-  const witnessMissing = input.findings.some(
-    (f) => f.code === 'no_witness' || f.code === 'witness_missing' || f.code === 'witness_empty',
-  );
   return {
     tone: 'grey',
-    headline: 'Cannot prove completeness',
-    detail: witnessMissing
-      ? 'No witness is configured, so deleting events together with the checkpoints covering them '
-        + 'would leave a log that still looks consistent. Nothing here says this log was altered — '
-        + 'only that we cannot rule it out.'
-      : 'A check could not be completed, so this log is unproven. Nothing here says it was altered.',
+    headline: VERDICTS.grey.headline,
+    detail: VERDICTS.grey.lead,
     docsHref: DOCS_HREF,
     findings: named,
+    means: [...VERDICTS.grey.means],
+    doesNotMean: [...VERDICTS.grey.doesNotMean],
   };
 }
 
