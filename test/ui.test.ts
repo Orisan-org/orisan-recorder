@@ -205,3 +205,82 @@ describe('the server', () => {
     expect(await r.text()).toMatch(/<div id="root">/);
   });
 });
+
+describe('v3: sessions in the API', () => {
+  let sdir: string; let skeyDir: string; let sstop: (() => Promise<void>) | null = null; let sbase = '';
+  const ids: string[] = [];
+
+  beforeAll(async () => {
+    sdir = mkdtempSync(join(tmpdir(), 'orisan-sess-'));
+    skeyDir = mkdtempSync(join(tmpdir(), 'orisan-sesskey-'));
+
+    // Three separate recorder runs over one log — three sessions.
+    for (const [tool, n, flagAt] of [['crm', 4, -1], ['billing', 5, 2], ['crm', 3, -1]] as const) {
+      const rec = Recorder.open(sdir, {
+        fsync: false, anchor: { enabled: false },
+        signingKeyPath: join(skeyDir, 'signing.key'), submitToWitness: false,
+      });
+      ids.push(rec.sessionId);
+      for (let i = 0; i < n; i++) {
+        await rec.record({
+          actor: { human: 'a', agent_id: `spiffe://x/${tool}`, tool },
+          kind: i === flagAt ? 'flag' : 'tool_call',
+          target: `${tool}.op${i}`, args_digest: null, payload_ref: null,
+          outcome: 'ok', duration_ms: 1,
+        });
+      }
+      rec.close();
+    }
+
+    const s = await startServer({
+      logDir: sdir, port: 0, shimPath: join(process.cwd(), 'src', 'shim-main.ts'), uiDir: UI_DIST,
+    });
+    sstop = s.close;
+    sbase = `http://127.0.0.1:${(s as unknown as { port: number }).port}`;
+  }, 30_000);
+
+  afterAll(async () => {
+    if (sstop) await sstop();
+    for (const d of [sdir, skeyDir]) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('groups the log into the runs that produced it', async () => {
+    const r = await (await fetch(`${sbase}/api/sessions`)).json() as {
+      sessions: { id: string; events: number; flagged: number; agents: string[] }[];
+    };
+    expect(r.sessions).toHaveLength(3);
+    expect(new Set(r.sessions.map((s) => s.id))).toEqual(new Set(ids));
+    expect(r.sessions.reduce((n, s) => n + s.events, 0)).toBe(12);
+    expect(r.sessions.filter((s) => s.flagged > 0)).toHaveLength(1);
+    expect(r.sessions.find((s) => s.flagged > 0)!.agents).toEqual(['billing']);
+  });
+
+  it('orders sessions newest first', async () => {
+    const r = await (await fetch(`${sbase}/api/sessions`)).json() as { sessions: { startedAt: string }[] };
+    const times = r.sessions.map((s) => Date.parse(s.startedAt));
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+  });
+
+  it('filters events by session', async () => {
+    const target = ids[1]!;
+    const r = await (await fetch(`${sbase}/api/events?session=${target}`)).json() as {
+      events: { session_id: string }[]; sessions: unknown[];
+    };
+    expect(r.events).toHaveLength(5);
+    expect(r.events.every((e) => e.session_id === target)).toBe(true);
+    // The full session list still ships, so the UI can offer the filter.
+    expect(r.sessions).toHaveLength(3);
+  });
+
+  it('unfiltered events carry their session and cover every run', async () => {
+    const r = await (await fetch(`${sbase}/api/events`)).json() as { events: { session_id: string }[] };
+    expect(r.events).toHaveLength(12);
+    expect(new Set(r.events.map((e) => e.session_id)).size).toBe(3);
+  });
+
+  it('an unknown session filters to nothing rather than erroring', async () => {
+    const r = await fetch(`${sbase}/api/events?session=00000000-0000-4000-8000-000000000000`);
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { events: unknown[] }).events).toEqual([]);
+  });
+});

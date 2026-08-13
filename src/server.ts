@@ -74,20 +74,50 @@ function verifyNow(opts: ServerOptions) {
   });
 }
 
-/** Sessions, derived from the event log: a session is a run of events. */
-function sessions(logDir: string): { id: string; startedAt: string; endedAt: string; events: number; flagged: number }[] {
+export interface SessionSummary {
+  id: string;
+  startedAt: string;
+  endedAt: string;
+  events: number;
+  flagged: number;
+  agents: string[];
+  firstSeq: number;
+  lastSeq: number;
+}
+
+/**
+ * Sessions, grouped from the events themselves.
+ *
+ * Until v3 this fabricated a single session called "current" because events
+ * carried no session id — an invented boundary, and one that quietly implied a
+ * whole log was one run. Now the grouping comes from a field that is inside
+ * each event's hash, so it cannot be edited after the fact.
+ */
+function sessions(logDir: string): SessionSummary[] {
   if (!existsSync(logDir)) return [];
   const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
-  if (events.length === 0) return [];
-  // R1 has no session id on events; the whole log is one session for now, and
-  // saying so is better than inventing boundaries the data does not carry.
-  return [{
-    id: 'current',
-    startedAt: events[0]!.ts,
-    endedAt: events[events.length - 1]!.ts,
-    events: events.length,
-    flagged: events.filter((e) => e.kind === 'flag').length,
-  }];
+
+  const byId = new Map<string, SessionSummary>();
+  for (const e of events) {
+    let s = byId.get(e.session_id);
+    if (!s) {
+      s = {
+        id: e.session_id, startedAt: e.ts, endedAt: e.ts,
+        events: 0, flagged: 0, agents: [], firstSeq: e.seq, lastSeq: e.seq,
+      };
+      byId.set(e.session_id, s);
+    }
+    s.events++;
+    if (e.kind === 'flag') s.flagged++;
+    if (e.ts < s.startedAt) s.startedAt = e.ts;
+    if (e.ts > s.endedAt) s.endedAt = e.ts;
+    if (e.seq < s.firstSeq) s.firstSeq = e.seq;
+    if (e.seq > s.lastSeq) s.lastSeq = e.seq;
+    const tool = e.actor.tool ?? e.actor.agent_id;
+    if (!s.agents.includes(tool)) s.agents.push(tool);
+  }
+  // Newest first.
+  return [...byId.values()].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
 }
 
 export function createApp(opts: ServerOptions) {
@@ -123,15 +153,18 @@ export function createApp(opts: ServerOptions) {
         if (path === '/api/sessions') { json(res, 200, { sessions: sessions(opts.logDir) }); return; }
 
         if (path === '/api/events') {
-          const events = existsSync(opts.logDir)
+          const wanted = url.searchParams.get('session');
+          const all = existsSync(opts.logDir)
             ? EventStore.open(opts.logDir, { readOnly: true }).store.readAll()
             : [];
+          const events = wanted === null ? all : all.filter((e) => e.session_id === wanted);
           json(res, 200, {
             events: events.map((e) => ({
-              seq: e.seq, ts: e.ts, kind: e.kind, target: e.target,
+              seq: e.seq, session_id: e.session_id, ts: e.ts, kind: e.kind, target: e.target,
               outcome: e.outcome, duration_ms: e.duration_ms,
               actor: e.actor, args_digest: e.args_digest,
             })),
+            sessions: sessions(opts.logDir),
             checkpoints: readCheckpoints(opts.logDir).length,
           });
           return;

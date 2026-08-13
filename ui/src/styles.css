@@ -56,3 +56,13 @@ tr.flagged td { color: var(--amber-fg); }
 .gaps { border-left: 3px solid var(--amber-line); padding: 8px 12px; background: var(--amber-bg);
         color: var(--amber-fg); margin-top: 16px; }
 .err { color: var(--red-fg); }
+
+.session-group { margin-bottom: 26px; }
+.session-head {
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+  padding: 8px 10px; background: var(--panel);
+  border: 1px solid var(--line); border-bottom: 0; border-radius: 5px 5px 0 0;
+}
+.session-head .id { font-weight: 650; color: var(--fg); }
+.session-head .meta { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+.session-head .flag-count { color: var(--amber-fg); font-weight: 600; }

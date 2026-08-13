@@ -23,8 +23,14 @@ export interface Server {
 export interface Surface { surface: string; config_path: string | null; servers: Server[] }
 export interface ScanResult { scanned_at: string; platform: string; home: string; surfaces: Surface[]; gaps: string[] }
 
+export interface SessionSummary {
+  id: string; startedAt: string; endedAt: string;
+  events: number; flagged: number; agents: string[];
+  firstSeq: number; lastSeq: number;
+}
+
 export interface UiEvent {
-  seq: number; ts: string; kind: string; target: string | null;
+  seq: number; session_id: string; ts: string; kind: string; target: string | null;
   outcome: string | null; duration_ms: number | null;
   actor: { human: string | null; agent_id: string; tool: string | null };
   args_digest: string | null;
@@ -47,8 +53,10 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 export const api = {
   status: () => get<Status>('/api/status'),
   scan: () => get<ScanResult>('/api/scan'),
-  events: () => get<{ events: UiEvent[]; checkpoints: number }>('/api/events'),
-  sessions: () => get<{ sessions: { id: string; startedAt: string; endedAt: string; events: number; flagged: number }[] }>('/api/sessions'),
+  events: (sessionId?: string) => get<{ events: UiEvent[]; sessions: SessionSummary[]; checkpoints: number }>(
+    sessionId === undefined ? '/api/events' : `/api/events?session=${encodeURIComponent(sessionId)}`,
+  ),
+  sessions: () => get<{ sessions: SessionSummary[] }>('/api/sessions'),
   attached: (config: string) => get<{ attached: boolean }>(`/api/attached?config=${encodeURIComponent(config)}`),
   attach: (config: string) => post<{ rewritten: string[]; skipped: string[]; note: string }>('/api/attach', { config }),
   detach: (config: string) => post<{ byteIdentical: boolean }>('/api/detach', { config }),
