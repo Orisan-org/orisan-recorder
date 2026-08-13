@@ -169,6 +169,12 @@ export class EventIndex {
     return this.db.prepare(sql).all(params) as IndexedEvent[];
   }
 
+  /** Highest indexed seq, or -1. Paired with peekHeadSeq for staleness. */
+  maxSeq(): number {
+    const row = this.db.prepare('SELECT MAX(seq) AS m FROM events').get() as { m: number | null };
+    return row.m ?? -1;
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n;
   }
@@ -176,7 +182,7 @@ export class EventIndex {
   /** One row per recording session, newest first. Drives the Sessions screen. */
   sessions(): {
     session_id: string; started_at: string; ended_at: string;
-    events: number; flagged: number; agents: string;
+    events: number; flagged: number; agents: string; first_seq: number; last_seq: number;
   }[] {
     return this.db.prepare(`
       SELECT session_id,
@@ -184,11 +190,16 @@ export class EventIndex {
              MAX(ts) AS ended_at,
              COUNT(*) AS events,
              SUM(CASE WHEN kind = 'flag' THEN 1 ELSE 0 END) AS flagged,
-             GROUP_CONCAT(DISTINCT actor_tool) AS agents
+             GROUP_CONCAT(DISTINCT actor_tool) AS agents,
+             MIN(seq) AS first_seq,
+             MAX(seq) AS last_seq
       FROM events
       GROUP BY session_id
       ORDER BY started_at DESC
-    `).all() as { session_id: string; started_at: string; ended_at: string; events: number; flagged: number; agents: string }[];
+    `).all() as {
+      session_id: string; started_at: string; ended_at: string;
+      events: number; flagged: number; agents: string; first_seq: number; last_seq: number;
+    }[];
   }
 
   countByKind(): Record<string, number> {

@@ -21,7 +21,8 @@ import { attach, detach, discardBackup, isAttached } from './attach.js';
 import { bannerFor } from './banner.js';
 import { buildEvidenceBundle } from './bundle.js';
 import { scan } from './discover.js';
-import { EventStore } from './store.js';
+import { EventIndex } from './index-db.js';
+import { EventStore, peekHeadSeq } from './store.js';
 import { verify } from './verify.js';
 import { readCheckpoints } from './checkpoint.js';
 
@@ -74,6 +75,23 @@ function verifyNow(opts: ServerOptions) {
   });
 }
 
+/**
+ * The index, brought up to date only if it has fallen behind.
+ *
+ * Staleness is a single integer comparison against the tail of the log, so the
+ * common case costs nothing. Before this, every /api/sessions and /api/events
+ * call read the entire event log to group it — fine for a demo, quadratic-ish
+ * misery for a long-running recorder, and about to get hotter.
+ */
+function freshIndex(logDir: string): EventIndex | null {
+  if (!existsSync(logDir)) return null;
+  const index = EventIndex.open(logDir);
+  if (index.maxSeq() !== peekHeadSeq(logDir)) {
+    index.rebuild(EventStore.open(logDir, { readOnly: true }).store);
+  }
+  return index;
+}
+
 export interface SessionSummary {
   id: string;
   startedAt: string;
@@ -93,31 +111,18 @@ export interface SessionSummary {
  * whole log was one run. Now the grouping comes from a field that is inside
  * each event's hash, so it cannot be edited after the fact.
  */
-function sessions(logDir: string): SessionSummary[] {
-  if (!existsSync(logDir)) return [];
-  const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
-
-  const byId = new Map<string, SessionSummary>();
-  for (const e of events) {
-    let s = byId.get(e.session_id);
-    if (!s) {
-      s = {
-        id: e.session_id, startedAt: e.ts, endedAt: e.ts,
-        events: 0, flagged: 0, agents: [], firstSeq: e.seq, lastSeq: e.seq,
-      };
-      byId.set(e.session_id, s);
-    }
-    s.events++;
-    if (e.kind === 'flag') s.flagged++;
-    if (e.ts < s.startedAt) s.startedAt = e.ts;
-    if (e.ts > s.endedAt) s.endedAt = e.ts;
-    if (e.seq < s.firstSeq) s.firstSeq = e.seq;
-    if (e.seq > s.lastSeq) s.lastSeq = e.seq;
-    const tool = e.actor.tool ?? e.actor.agent_id;
-    if (!s.agents.includes(tool)) s.agents.push(tool);
-  }
-  // Newest first.
-  return [...byId.values()].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+function sessions(index: EventIndex | null): SessionSummary[] {
+  if (!index) return [];
+  return index.sessions().map((r) => ({
+    id: r.session_id,
+    startedAt: r.started_at,
+    endedAt: r.ended_at,
+    events: r.events,
+    flagged: r.flagged,
+    agents: (r.agents ?? '').split(',').filter((a) => a.length > 0),
+    firstSeq: r.first_seq,
+    lastSeq: r.last_seq,
+  }));
 }
 
 export function createApp(opts: ServerOptions) {
@@ -150,23 +155,30 @@ export function createApp(opts: ServerOptions) {
           return;
         }
 
-        if (path === '/api/sessions') { json(res, 200, { sessions: sessions(opts.logDir) }); return; }
+        if (path === '/api/sessions') {
+          const index = freshIndex(opts.logDir);
+          try { json(res, 200, { sessions: sessions(index) }); } finally { index?.close(); }
+          return;
+        }
 
         if (path === '/api/events') {
           const wanted = url.searchParams.get('session');
-          const all = existsSync(opts.logDir)
-            ? EventStore.open(opts.logDir, { readOnly: true }).store.readAll()
-            : [];
-          const events = wanted === null ? all : all.filter((e) => e.session_id === wanted);
-          json(res, 200, {
-            events: events.map((e) => ({
-              seq: e.seq, session_id: e.session_id, ts: e.ts, kind: e.kind, target: e.target,
-              outcome: e.outcome, duration_ms: e.duration_ms,
-              actor: e.actor, args_digest: e.args_digest,
-            })),
-            sessions: sessions(opts.logDir),
-            checkpoints: readCheckpoints(opts.logDir).length,
-          });
+          const index = freshIndex(opts.logDir);
+          try {
+            const rows = index
+              ? index.query(wanted === null ? {} : { sessionId: wanted })
+              : [];
+            json(res, 200, {
+              events: rows.map((e) => ({
+                seq: e.seq, session_id: e.session_id, ts: e.ts, kind: e.kind, target: e.target,
+                outcome: e.outcome, duration_ms: e.duration_ms,
+                actor: { human: e.actor_human, agent_id: e.actor_agent_id, tool: e.actor_tool },
+                payload_ref: e.payload_ref,
+              })),
+              sessions: sessions(index),
+              checkpoints: readCheckpoints(opts.logDir).length,
+            });
+          } finally { index?.close(); }
           return;
         }
 

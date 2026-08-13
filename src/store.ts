@@ -105,6 +105,31 @@ function splitLines(buf: Buffer): { lines: string[]; remainder: Buffer } {
   return { lines, remainder };
 }
 
+/**
+ * The seq of the last event, read from the tail of the last segment.
+ *
+ * Exists so a cache can be checked for staleness without reading the whole
+ * log — which is the thing the cache is there to avoid. Returns -1 for an
+ * empty or absent log.
+ */
+export function peekHeadSeq(dir: string): number {
+  const segments = listSegments(dir);
+  if (segments.length === 0) return -1;
+  const last = segments[segments.length - 1]!;
+  const { lines } = splitLines(readFileSync(join(dir, last)));
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (line.length === 0) continue;
+    try {
+      const seq = (JSON.parse(line) as { seq?: unknown }).seq;
+      if (typeof seq === 'number') return seq;
+    } catch {
+      // A torn tail is the recovery path's problem, not this probe's.
+    }
+  }
+  return -1;
+}
+
 export class EventStore {
   readonly dir: string;
   private readonly maxEventsPerSegment: number;

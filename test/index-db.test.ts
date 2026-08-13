@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { EventIndex } from '../src/index-db.js';
-import { EventStore } from '../src/store.js';
+import { EventStore, peekHeadSeq } from '../src/store.js';
 import type { EventInput } from '../src/schema.js';
 
 let dir: string;
@@ -109,5 +109,46 @@ describe('queries the UI needs', () => {
     const byKind = index.countByKind();
     expect(byKind['model_call']! + byKind['tool_call']!).toBe(50);
     index.close();
+  });
+});
+
+describe('sessions come from the index, and staleness is cheap to spot', () => {
+  it('groups by session with counts, agents and seq range', () => {
+    const { store, index } = seeded(0);
+    store.close();
+    const a = EventStore.open(dir, { fsync: false, sessionId: '11111111-0000-4000-8000-000000000001' }).store;
+    for (let i = 0; i < 4; i++) a.append(ev(i));
+    a.close();
+    const b = EventStore.open(dir, { fsync: false, sessionId: '22222222-0000-4000-8000-000000000002' }).store;
+    for (let i = 0; i < 6; i++) b.append(ev(i, { kind: i === 2 ? 'flag' : 'tool_call' }));
+    b.close();
+
+    index.rebuild(EventStore.open(dir, { readOnly: true }).store);
+    const rows = index.sessions();
+    expect(rows).toHaveLength(2);
+    const second = rows.find((r) => r.session_id.startsWith('22222222'))!;
+    expect(second.events).toBe(6);
+    expect(second.flagged).toBe(1);
+    expect(second.first_seq).toBe(4);
+    expect(second.last_seq).toBe(9);
+    index.close();
+  });
+
+  it('maxSeq matches the log head, and diverges when the index falls behind', () => {
+    const { store, index } = seeded(10);
+    expect(index.maxSeq()).toBe(peekHeadSeq(dir));
+
+    store.append(ev(99));
+    store.close();
+    // Index untouched: the probe must notice without reading the log.
+    expect(index.maxSeq()).not.toBe(peekHeadSeq(dir));
+
+    index.rebuild(EventStore.open(dir, { readOnly: true }).store);
+    expect(index.maxSeq()).toBe(peekHeadSeq(dir));
+    index.close();
+  });
+
+  it('peekHeadSeq is -1 for an empty log', () => {
+    expect(peekHeadSeq(mkdtempSync(join(tmpdir(), 'empty-')))).toBe(-1);
   });
 });

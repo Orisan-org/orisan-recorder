@@ -283,4 +283,26 @@ describe('v3: sessions in the API', () => {
     expect(r.status).toBe(200);
     expect(((await r.json()) as { events: unknown[] }).events).toEqual([]);
   });
+
+  it('notices when the index has fallen behind, rather than serving a stale answer', async () => {
+    // maintainIndex:false writes events the index has never seen — the same
+    // state as a log written by an older build or copied in from elsewhere.
+    const rec = Recorder.open(sdir, {
+      fsync: false, anchor: { enabled: false },
+      signingKeyPath: join(skeyDir, 'signing.key'), submitToWitness: false,
+      maintainIndex: false,
+    });
+    for (let i = 0; i < 3; i++) {
+      await rec.record({
+        actor: { human: 'a', agent_id: 'spiffe://x/late', tool: 'late' },
+        kind: 'tool_call', target: `late.op${i}`, args_digest: null,
+        payload_ref: null, outcome: 'ok', duration_ms: 1,
+      });
+    }
+    rec.close();
+
+    const r = await (await fetch(`${sbase}/api/sessions`)).json() as { sessions: { agents: string[] }[] };
+    expect(r.sessions).toHaveLength(4);
+    expect(r.sessions.some((s) => s.agents.includes('late'))).toBe(true);
+  });
 });

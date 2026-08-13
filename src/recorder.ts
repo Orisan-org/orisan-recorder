@@ -7,6 +7,7 @@
  */
 
 import { DEFAULT_CHECKPOINT_INTERVAL, appendCheckpoint, buildCheckpoint, generateSigningKey, loadSigningKey, readCheckpoints, type SignedCheckpoint, type SigningKeyFile } from './checkpoint.js';
+import { EventIndex } from './index-db.js';
 import { EventStore, type StoreOptions } from './store.js';
 import { anchorCheckpoint, type AnchorOptions } from './tsa.js';
 import { witnessCheckpoint } from './witness.js';
@@ -30,6 +31,8 @@ export interface RecorderOptions extends StoreOptions {
   submitToWitness?: boolean;
   /** Session id for every event this recorder appends. Defaults to a fresh uuid. */
   sessionId?: string;
+  /** Keep the SQLite index current as events are appended. Default true. */
+  maintainIndex?: boolean;
   /**
    * Where the signing private key lives. Defaults to ~/.orisan/signing.key —
    * deliberately NOT the log directory, because a key stored beside the data
@@ -51,6 +54,7 @@ export class Recorder {
   private readonly anchorOpts: AnchorOptions & { enabled: boolean };
   private readonly witnessFile: string | undefined;
   private readonly witnessService: WitnessConfig | null;
+  private readonly index: EventIndex | null;
   /** seq of the last event already covered by a checkpoint. */
   private lastCheckpointedSeq: number;
   /** The tail of the checkpoint chain, so the next one can link to it. */
@@ -66,6 +70,9 @@ export class Recorder {
     this.witnessFile = opts.witnessFile;
     // Present only if `orisan-rec witness register` has run for this log.
     this.witnessService = opts.submitToWitness === false ? null : readWitnessConfig(dir);
+    // The index is a cache. Writing to it here keeps reads cheap; if it ever
+    // drifts, rebuild() is still the only repair and the JSONL is still truth.
+    this.index = opts.maintainIndex === false ? null : EventIndex.open(dir);
 
     const cps = readCheckpoints(dir);
     this.lastCheckpoint = cps.length ? cps[cps.length - 1]! : null;
@@ -96,6 +103,9 @@ export class Recorder {
   /** Append an event; cut a checkpoint if the cadence says so. */
   async record(input: EventInput): Promise<RecordedEvent> {
     const e = this.store.append(input);
+    // Index failure must never fail a recording: the log is the record, the
+    // index is only how the UI reads it quickly.
+    try { this.index?.put(e); } catch { /* rebuilt on demand */ }
     const pending = e.seq - this.lastCheckpointedSeq;
     if (pending >= this.interval) await this.cutCheckpoint('interval');
     return e;
@@ -139,11 +149,12 @@ export class Recorder {
   /** Cut a final checkpoint and close. */
   async end(): Promise<SignedCheckpoint | null> {
     const cp = await this.cutCheckpoint('session_end');
-    this.store.close();
+    this.close();
     return cp;
   }
 
   close(): void {
     this.store.close();
+    try { this.index?.close(); } catch { /* closing a cache cannot fail a run */ }
   }
 }
