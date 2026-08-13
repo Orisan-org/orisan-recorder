@@ -1,0 +1,9 @@
+{
+  // Tests are type-checked too. The main tsconfig only covers src/ (it drives
+  // the build), which meant a test calling a function with the wrong arity
+  // compiled fine and only failed at runtime — exactly how the session_id
+  // change slipped past `npm run typecheck`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

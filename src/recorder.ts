@@ -28,6 +28,8 @@ export interface RecorderOptions extends StoreOptions {
   witnessFile?: string;
   /** Set false to skip witness submission (used by offline-only commands). */
   submitToWitness?: boolean;
+  /** Session id for every event this recorder appends. Defaults to a fresh uuid. */
+  sessionId?: string;
   /**
    * Where the signing private key lives. Defaults to ~/.orisan/signing.key —
    * deliberately NOT the log directory, because a key stored beside the data
@@ -84,6 +86,11 @@ export class Recorder {
 
   get eventCount(): number {
     return this.store.count;
+  }
+
+  /** The session every event from this recorder carries. */
+  get sessionId(): string {
+    return this.store.session;
   }
 
   /** Append an event; cut a checkpoint if the cadence says so. */

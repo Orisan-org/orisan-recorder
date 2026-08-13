@@ -24,6 +24,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
   seq            INTEGER PRIMARY KEY,
   event_id       TEXT    NOT NULL,
+  session_id     TEXT    NOT NULL,
   ts             TEXT    NOT NULL,
   kind           TEXT    NOT NULL,
   actor_human    TEXT,
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS events (
   payload_ref    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts       ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_session  ON events(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_kind     ON events(kind);
 CREATE INDEX IF NOT EXISTS idx_events_agent    ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind_ts  ON events(kind, ts);
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS meta (
 `;
 
 export interface EventQuery {
+  sessionId?: string;
   kind?: RecordedEvent['kind'];
   agentId?: string;
   since?: string;
@@ -58,6 +61,7 @@ export interface EventQuery {
 export interface IndexedEvent {
   seq: number;
   event_id: string;
+  session_id: string;
   ts: string;
   kind: string;
   actor_human: string | null;
@@ -90,9 +94,9 @@ export class EventIndex {
   private insertStmt() {
     return this.db.prepare(`
       INSERT OR REPLACE INTO events
-        (seq, event_id, ts, kind, actor_human, actor_agent_id, actor_tool, target, outcome, duration_ms, payload_ref)
+        (seq, event_id, session_id, ts, kind, actor_human, actor_agent_id, actor_tool, target, outcome, duration_ms, payload_ref)
       VALUES
-        (@seq, @event_id, @ts, @kind, @actor_human, @actor_agent_id, @actor_tool, @target, @outcome, @duration_ms, @payload_ref)
+        (@seq, @event_id, @session_id, @ts, @kind, @actor_human, @actor_agent_id, @actor_tool, @target, @outcome, @duration_ms, @payload_ref)
     `);
   }
 
@@ -100,6 +104,7 @@ export class EventIndex {
     return {
       seq: e.seq,
       event_id: e.event_id,
+      session_id: e.session_id,
       ts: e.ts,
       kind: e.kind,
       actor_human: e.actor.human,
@@ -144,6 +149,7 @@ export class EventIndex {
   query(q: EventQuery = {}): IndexedEvent[] {
     const where: string[] = [];
     const params: Record<string, unknown> = {};
+    if (q.sessionId !== undefined) { where.push('session_id = @sessionId'); params['sessionId'] = q.sessionId; }
     if (q.kind !== undefined) { where.push('kind = @kind'); params['kind'] = q.kind; }
     if (q.agentId !== undefined) { where.push('actor_agent_id = @agentId'); params['agentId'] = q.agentId; }
     if (q.since !== undefined) { where.push('ts >= @since'); params['since'] = q.since; }
@@ -165,6 +171,24 @@ export class EventIndex {
 
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n;
+  }
+
+  /** One row per recording session, newest first. Drives the Sessions screen. */
+  sessions(): {
+    session_id: string; started_at: string; ended_at: string;
+    events: number; flagged: number; agents: string;
+  }[] {
+    return this.db.prepare(`
+      SELECT session_id,
+             MIN(ts) AS started_at,
+             MAX(ts) AS ended_at,
+             COUNT(*) AS events,
+             SUM(CASE WHEN kind = 'flag' THEN 1 ELSE 0 END) AS flagged,
+             GROUP_CONCAT(DISTINCT actor_tool) AS agents
+      FROM events
+      GROUP BY session_id
+      ORDER BY started_at DESC
+    `).all() as { session_id: string; started_at: string; ended_at: string; events: number; flagged: number; agents: string }[];
   }
 
   countByKind(): Record<string, number> {

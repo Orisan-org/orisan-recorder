@@ -69,7 +69,7 @@ describe('index as a cache', () => {
 
   it('never stores chain fields — verification must read the segments', () => {
     const { index } = seeded(5);
-    const row = index.query({ limit: 1 })[0]! as Record<string, unknown>;
+    const row = index.query({ limit: 1 })[0]! as unknown as Record<string, unknown>;
     expect(row).not.toHaveProperty('hash');
     expect(row).not.toHaveProperty('prev_hash');
     index.close();

@@ -72,7 +72,8 @@ const run = () => verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
 /** A count:0 checkpoint body, as an attacker would hand-craft it. */
 function emptyBody(from: number, to: number, keyId: string): CheckpointBody {
   return {
-    v: 1, seq_from: from, seq_to: to, count: 0,
+    v: 2, index: 99, prev_checkpoint_hash: '0'.repeat(64),
+    seq_from: from, seq_to: to, count: 0,
     merkle_root: merkleRoot([]),
     created_at: new Date().toISOString(),
     key_id: keyId, reason: 'manual',

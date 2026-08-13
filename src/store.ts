@@ -23,6 +23,7 @@ import {
   truncateSync,
   writeSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -40,6 +41,12 @@ import {
 const SEGMENT_RE = /^events-(\d{4})\.jsonl$/;
 
 export interface StoreOptions {
+  /**
+   * Session this store's appends belong to. One store instance is one session;
+   * defaults to a fresh uuid so a session id always exists rather than being
+   * optional and therefore sometimes absent.
+   */
+  sessionId?: string;
   /**
    * Never create, never truncate. verify() uses this: a verifier that writes
    * to the artefact it is checking destroys evidence — a torn tail removed by
@@ -103,6 +110,7 @@ export class EventStore {
   private readonly maxEventsPerSegment: number;
   private readonly doFsync: boolean;
   private readonly readOnly: boolean;
+  private readonly sessionId: string;
 
   private fd: number | null = null;
   private currentSegment = 0;
@@ -115,6 +123,7 @@ export class EventStore {
     this.maxEventsPerSegment = opts.maxEventsPerSegment;
     this.doFsync = opts.fsync;
     this.readOnly = opts.readOnly;
+    this.sessionId = opts.sessionId;
   }
 
   /**
@@ -126,6 +135,7 @@ export class EventStore {
       maxEventsPerSegment: opts.maxEventsPerSegment ?? 1000,
       fsync: opts.fsync ?? true,
       readOnly: opts.readOnly ?? false,
+      sessionId: opts.sessionId ?? randomUUID(),
     };
     if (resolved.maxEventsPerSegment < 1) throw new Error('maxEventsPerSegment must be >= 1');
 
@@ -218,7 +228,7 @@ export class EventStore {
   /** Append one event. Returns once the line is durable on disk. */
   append(input: EventInput): RecordedEvent {
     if (this.readOnly) throw new Error('store was opened read-only');
-    const event = buildEvent(input, this.nextSeq, this.lastHash);
+    const event = buildEvent(input, this.nextSeq, this.lastHash, this.sessionId);
     const fd = this.ensureOpenSegment();
     const line = Buffer.from(`${JSON.stringify(event)}\n`, 'utf8');
 
@@ -260,6 +270,9 @@ export class EventStore {
   verifyChainOnly(): ChainBreak[] {
     return verifyChain(this.readAll());
   }
+
+  /** The session id stamped on this store's appends. */
+  get session(): string { return this.sessionId; }
 
   get head(): { seq: number; hash: string } {
     return { seq: this.nextSeq - 1, hash: this.lastHash };

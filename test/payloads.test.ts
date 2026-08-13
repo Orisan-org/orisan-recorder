@@ -6,6 +6,12 @@ import { join } from 'node:path';
 
 import { PAYLOAD_DIRNAME, generateKeyFile, loadKeyFile, openPayload, sealPayload } from '../src/payloads.js';
 
+/** Flip one bit near the end of a buffer, in place. */
+function corruptTail(buf: Buffer): void {
+  const i = buf.length - 20;
+  buf[i] = (buf[i] ?? 0) ^ 0x01;
+}
+
 let dir: string;
 let keyPath: string;
 
@@ -86,7 +92,7 @@ describe('sealing and opening', () => {
     const ref = sealPayload(dir, kf, 'sensitive fake payload');
     const path = join(dir, PAYLOAD_DIRNAME, `${ref}.blob`);
     const blob = readFileSync(path);
-    blob[blob.length - 20] ^= 0x01;
+    corruptTail(blob);
     writeFileSync(path, blob);
     // Caught by content addressing before the cipher is even reached.
     expect(() => openPayload(dir, kf, ref)).toThrow(/does not match its content hash/);
@@ -98,7 +104,7 @@ describe('sealing and opening', () => {
     const kf = generateKeyFile(keyPath);
     const ref = sealPayload(dir, kf, 'sensitive fake payload');
     const blob = readFileSync(join(dir, PAYLOAD_DIRNAME, `${ref}.blob`));
-    blob[blob.length - 20] ^= 0x01;
+    corruptTail(blob);
     // Attacker recomputes the ref so content addressing passes; GCM must still refuse.
     const newRef = createHash('sha256').update(blob).digest('hex');
     writeFileSync(join(dir, PAYLOAD_DIRNAME, `${newRef}.blob`), blob);

@@ -12,8 +12,16 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
-/** Bumped whenever the hashed shape of an event changes. Part of the hash input. */
-export const SCHEMA_VERSION = 1 as const;
+/**
+ * Bumped whenever the hashed shape of an event changes. Part of the hash input.
+ *
+ * v3 adds session_id. Note this skips v2 for events: the checkpoint body is
+ * independently at v2, and leaving a v2 in both namespaces meaning different
+ * things is the kind of ambiguity that costs an hour in an incident. Nothing
+ * migrates — v1 logs will not validate, which is correct, because their events
+ * genuinely lack a field the current shape requires.
+ */
+export const SCHEMA_VERSION = 3 as const;
 
 /** prev_hash of the first event in a chain. */
 export const GENESIS_PREV_HASH = '0'.repeat(64);
@@ -50,6 +58,15 @@ export interface RecordedEvent {
   v: typeof SCHEMA_VERSION;
   seq: number;
   event_id: string;
+  /**
+   * The recording session this event belongs to. One recorder process — one
+   * shim wrapping one MCP server, one demo run — is one session.
+   *
+   * Inside the hash like every other field, so events cannot be moved between
+   * sessions after the fact. Grouping evidence by "which run was this?" is
+   * only worth anything if the grouping is itself sealed.
+   */
+  session_id: string;
   ts: string;
   clock_source: ClockSource;
   actor: Actor;
@@ -68,7 +85,7 @@ export interface RecordedEvent {
 /** Everything the caller supplies; the store owns seq, chaining and hashing. */
 export type EventInput = Omit<
   RecordedEvent,
-  'v' | 'seq' | 'event_id' | 'ts' | 'clock_source' | 'prev_hash' | 'hash'
+  'v' | 'seq' | 'event_id' | 'ts' | 'clock_source' | 'session_id' | 'prev_hash' | 'hash'
 > & {
   event_id?: string;
   ts?: string;
@@ -136,12 +153,25 @@ export function argsDigest(args: unknown): string {
   return createHash('sha256').update(canonicalJson(args), 'utf8').digest('hex');
 }
 
-/** Seal an input into a fully-formed event on the end of a chain. */
-export function buildEvent(input: EventInput, seq: number, prevHash: string): RecordedEvent {
+/**
+ * Seal an input into a fully-formed event on the end of a chain.
+ *
+ * session_id is stamped by the store rather than supplied per event, the same
+ * way clock_source is: it is a property of the recorder that produced the
+ * event, not of the individual call, and letting callers pass it per event
+ * would let one session's events claim to be another's.
+ */
+export function buildEvent(
+  input: EventInput,
+  seq: number,
+  prevHash: string,
+  sessionId: string,
+): RecordedEvent {
   const base: Omit<RecordedEvent, 'hash'> = {
     v: SCHEMA_VERSION,
     seq,
     event_id: input.event_id ?? randomUUID(),
+    session_id: sessionId,
     ts: input.ts ?? new Date().toISOString(),
     clock_source: 'host_wall_clock',
     actor: input.actor,
@@ -157,11 +187,12 @@ export function buildEvent(input: EventInput, seq: number, prevHash: string): Re
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Exactly the keys a v1 event may carry. Anything else is rejected. */
 const ALLOWED_EVENT_KEYS: ReadonlySet<string> = new Set([
-  'v', 'seq', 'event_id', 'ts', 'clock_source', 'actor', 'kind', 'target',
-  'args_digest', 'payload_ref', 'outcome', 'duration_ms', 'prev_hash', 'hash',
+  'v', 'seq', 'event_id', 'session_id', 'ts', 'clock_source', 'actor', 'kind',
+  'target', 'args_digest', 'payload_ref', 'outcome', 'duration_ms', 'prev_hash', 'hash',
 ]);
 
 const ALLOWED_ACTOR_KEYS: ReadonlySet<string> = new Set(['human', 'agent_id', 'tool']);
@@ -173,6 +204,7 @@ export function validateEvent(value: unknown): asserts value is RecordedEvent {
   if (e.v !== SCHEMA_VERSION) throw new Error(`unsupported schema version: ${String(e.v)}`);
   if (!Number.isSafeInteger(e.seq) || (e.seq as number) < 0) throw new Error('seq must be a non-negative integer');
   if (typeof e.event_id !== 'string' || e.event_id.length === 0) throw new Error('event_id must be a non-empty string');
+  if (typeof e.session_id !== 'string' || !UUID_RE.test(e.session_id)) throw new Error('session_id must be a uuid');
   if (typeof e.ts !== 'string' || Number.isNaN(Date.parse(e.ts))) throw new Error('ts must be an ISO timestamp');
   if (!CLOCK_SOURCES.includes(e.clock_source as ClockSource)) throw new Error('unknown clock_source');
   if (!EVENT_KINDS.includes(e.kind as EventKind)) throw new Error(`unknown kind: ${String(e.kind)}`);

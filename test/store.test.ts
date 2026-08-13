@@ -190,3 +190,41 @@ describe('crash safety', () => {
     expect(store.verifyChainOnly()).toEqual([]);
   });
 });
+
+describe('v3: the store owns the session id', () => {
+  it('stamps every append with one session, defaulting to a fresh uuid', () => {
+    const { store } = EventStore.open(dir, { fsync: false });
+    for (let i = 0; i < 5; i++) store.append(ev(i));
+    store.close();
+
+    const events = EventStore.open(dir, { readOnly: true }).store.readAll();
+    const sessions = new Set(events.map((e) => e.session_id));
+    expect(sessions.size).toBe(1);
+    expect([...sessions][0]).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a second store over the same log is a second session', () => {
+    const a = EventStore.open(dir, { fsync: false }).store;
+    a.append(ev(0));
+    const first = a.session;
+    a.close();
+
+    const b = EventStore.open(dir, { fsync: false }).store;
+    b.append(ev(1));
+    expect(b.session).not.toBe(first);
+    b.close();
+
+    const events = EventStore.open(dir, { readOnly: true }).store.readAll();
+    expect(new Set(events.map((e) => e.session_id)).size).toBe(2);
+    // Two sessions, one chain: the log is still contiguous.
+    expect(EventStore.open(dir, { readOnly: true }).store.verifyChainOnly()).toEqual([]);
+  });
+
+  it('an explicit session id is honoured', () => {
+    const id = '7a1f0000-0000-4000-8000-00000000abcd';
+    const { store } = EventStore.open(dir, { fsync: false, sessionId: id });
+    store.append(ev(0));
+    store.close();
+    expect(EventStore.open(dir, { readOnly: true }).store.readAll()[0]!.session_id).toBe(id);
+  });
+});

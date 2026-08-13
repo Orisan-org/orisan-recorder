@@ -26,11 +26,13 @@ function input(over: Partial<EventInput> = {}): EventInput {
   };
 }
 
+const SESSION = '3f1c9a20-0000-4000-8000-000000000001';
+
 function chain(n: number): RecordedEvent[] {
   const out: RecordedEvent[] = [];
   let prev = GENESIS_PREV_HASH;
   for (let i = 0; i < n; i++) {
-    const e = buildEvent(input({ target: `tool.${i}` }), i, prev);
+    const e = buildEvent(input({ target: `tool.${i}` }), i, prev, SESSION);
     out.push(e);
     prev = e.hash;
   }
@@ -64,19 +66,19 @@ describe('hashParts NUL separation', () => {
 
 describe('event construction', () => {
   it('stamps the schema version and a host clock source', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     expect(e.v).toBe(SCHEMA_VERSION);
     expect(e.clock_source).toBe('host_wall_clock');
   });
 
   it('hash excludes only the hash field and covers everything else', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     const { hash, ...rest } = e;
     expect(computeEventHash(rest as Omit<RecordedEvent, 'hash'>)).toBe(hash);
   });
 
   it('changing any covered field changes the hash', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     for (const mutate of [
       (x: RecordedEvent) => ({ ...x, target: 'other' }),
       (x: RecordedEvent) => ({ ...x, outcome: 'error' }),
@@ -93,19 +95,19 @@ describe('event construction', () => {
 
   it('is deterministic across independent builds', () => {
     const fixed = { event_id: 'f6b4d0f6-0000-4000-8000-000000000000', ts: '2026-08-12T00:00:00.000Z' };
-    const a = buildEvent(input(fixed), 7, GENESIS_PREV_HASH);
-    const b = buildEvent(input(fixed), 7, GENESIS_PREV_HASH);
+    const a = buildEvent(input(fixed), 7, GENESIS_PREV_HASH, SESSION);
+    const b = buildEvent(input(fixed), 7, GENESIS_PREV_HASH, SESSION);
     expect(a.hash).toBe(b.hash);
   });
 });
 
 describe('validateEvent', () => {
   it('accepts a well-formed event', () => {
-    expect(() => validateEvent(buildEvent(input(), 0, GENESIS_PREV_HASH))).not.toThrow();
+    expect(() => validateEvent(buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION))).not.toThrow();
   });
 
   it('rejects an unknown kind, a bad digest and a future schema version', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     expect(() => validateEvent({ ...e, kind: 'sudo' })).toThrow(/unknown kind/);
     expect(() => validateEvent({ ...e, args_digest: 'nope' })).toThrow(/args_digest/);
     expect(() => validateEvent({ ...e, v: 2 })).toThrow(/unsupported schema version/);
@@ -185,7 +187,7 @@ describe('regression: canonicalJson __proto__ collision (SECURITY-REVIEW-R1)', (
   });
 
   it('validateEvent rejects an event carrying a __proto__ field outright', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     const smuggled = JSON.parse(
       JSON.stringify(e).replace('{', '{"__proto__":{"outcome":"ok"},'),
     ) as unknown;
@@ -193,15 +195,42 @@ describe('regression: canonicalJson __proto__ collision (SECURITY-REVIEW-R1)', (
   });
 
   it('validateEvent rejects any unknown field, and unknown actor fields', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     expect(() => validateEvent({ ...e, extra: 1 })).toThrow(/unknown event field: extra/);
     expect(() => validateEvent({ ...e, actor: { ...e.actor, spoof: 'x' } })).toThrow(/unknown actor field: spoof/);
   });
 
   it('validateEvent type-checks target, outcome and payload_ref', () => {
-    const e = buildEvent(input(), 0, GENESIS_PREV_HASH);
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
     expect(() => validateEvent({ ...e, target: 42 })).toThrow(/target must be a string or null/);
     expect(() => validateEvent({ ...e, outcome: { a: 1 } })).toThrow(/outcome must be a string or null/);
     expect(() => validateEvent({ ...e, payload_ref: 'not-a-digest' })).toThrow(/payload_ref must be sha256 hex/);
+  });
+});
+
+describe('v3: session_id', () => {
+  it('is stamped on every event and sealed into the hash', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
+    expect(e.v).toBe(3);
+    expect(e.session_id).toBe(SESSION);
+
+    // Moving an event to another session must break its hash, or grouping
+    // evidence by session would be worth nothing.
+    const moved = { ...e, session_id: '99999999-0000-4000-8000-000000000009' };
+    const { hash: _h, ...rest } = moved;
+    expect(computeEventHash(rest as Omit<RecordedEvent, 'hash'>)).not.toBe(e.hash);
+  });
+
+  it('validateEvent requires a uuid', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
+    expect(() => validateEvent(e)).not.toThrow();
+    expect(() => validateEvent({ ...e, session_id: 'not-a-uuid' })).toThrow(/session_id must be a uuid/);
+    const { session_id: _drop, ...without } = e;
+    expect(() => validateEvent(without)).toThrow(/session_id must be a uuid/);
+  });
+
+  it('a v1 event no longer validates — it lacks a field the shape requires', () => {
+    const e = buildEvent(input(), 0, GENESIS_PREV_HASH, SESSION);
+    expect(() => validateEvent({ ...e, v: 1 })).toThrow(/unsupported schema version/);
   });
 });
