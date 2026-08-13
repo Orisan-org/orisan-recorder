@@ -21,6 +21,7 @@ import { DEFAULT_TSA_URL, drainAnchorQueue, pendingAnchors } from './tsa.js';
 import { formatReport, verify } from './verify.js';
 import { DEFAULT_PORT, startServer } from './server.js';
 import { DEFAULT_TAP_PORT, startTap } from './tap.js';
+import { defaultHome, prepareStart, setupSteps, startBanner } from './quickstart.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
   fetchHead, pendingSubmissions, readWitnessConfig, registerLog, submitCheckpoint,
@@ -33,6 +34,7 @@ function usage(): string {
     'orisan-rec — recorder for AI agent actions',
     '',
     'Usage:',
+    '  orisan-rec start                          set everything up and open the interface',
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
     '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
     '  orisan-rec detach <config>                restore the original config exactly',
@@ -126,6 +128,29 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(usage());
     return 0;
   }
+  if (cmd === 'start') {
+    const r = prepareStart({ ...(argv.includes('--no-demo') ? { noDemo: true } : {}) });
+    const portFlag = flag(argv, '--port');
+    const runner = shimRunner();
+    const { port } = await startServer({
+      logDir: r.home.logDir,
+      port: portFlag !== undefined ? Number.parseInt(portFlag, 10) : DEFAULT_PORT,
+      shimPath: runner.shimPath,
+      nodePath: runner.nodePath,
+      signingKeyPath: r.home.signingKey,
+      payloadKeyPath: r.home.payloadKey,
+      orisanHome: r.home.root,
+    });
+    const url = `http://127.0.0.1:${port}`;
+    process.stdout.write(startBanner(r, url));
+    try {
+      const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+    } catch { /* a browser that will not open is not a reason to exit */ }
+    await new Promise(() => undefined);
+    return 0;
+  }
+
   if (cmd === 'scan') {
     const result = scan();
     const out = flag(argv, '--out');

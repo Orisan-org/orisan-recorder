@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { api, type GlossaryEntry, type ProveResult, type ScreenCopy } from './api.js';
+import React, { useEffect, useState } from 'react';
+import { api, type GlossaryEntry, type ProveResult, type ScreenCopy, type SetupStep } from './api.js';
 import { Annotated, ScreenHeader } from './Explain.js';
 
 /**
@@ -11,9 +11,12 @@ import { Annotated, ScreenHeader } from './Explain.js';
  * it would undo the point of the page.
  */
 export function WhyTrust({ copy, glossary }: { copy: ScreenCopy; glossary: GlossaryEntry[] }): React.JSX.Element {
+  const [steps, setSteps] = useState<SetupStep[]>([]);
   const [result, setResult] = useState<ProveResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { void api.setup().then((r) => setSteps(r.steps)).catch(() => undefined); }, []);
 
   const run = async (): Promise<void> => {
     setRunning(true); setError(null);
@@ -48,6 +51,28 @@ export function WhyTrust({ copy, glossary }: { copy: ScreenCopy; glossary: Gloss
           them.</li>
         <li><strong>Who did something.</strong> The records show what changed, not who changed it.</li>
       </ul>
+
+      {steps.length > 0 && steps.some((s) => !s.done) && (
+        <>
+          <h2 style={{ fontSize: 15, marginTop: 24 }}>What would make this green</h2>
+          <p className="screen-what">
+            The banner is grey because of the unfinished steps below. Grey is not a warning — it means one of these
+            has not been done yet.
+          </p>
+          <ol className="setup-list">
+            {steps.map((s) => (
+              <li key={s.label} className={s.done ? 'done' : ''}>
+                <span className="setup-mark">{s.done ? '✓' : '○'}</span>
+                <span>
+                  <strong>{s.label}</strong>
+                  <div className="ctx-note"><Annotated text={s.why} glossary={glossary} /></div>
+                  {!s.done && s.command && <div className="mono setup-cmd">{s.command}</div>}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
 
       <h2 style={{ fontSize: 15, marginTop: 26 }}>Prove it</h2>
       <p className="screen-what">

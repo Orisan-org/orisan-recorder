@@ -15,12 +15,14 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { dirname, extname, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { attach, detach, discardBackup, isAttached } from './attach.js';
 import { bannerFor } from './banner.js';
 import { GLOSSARY, SCREENS } from './explain.js';
 import { prove } from './prove.js';
+import { defaultHome, setupSteps } from './quickstart.js';
 import { loadKeyFile, openPayload } from './payloads.js';
 import { buildEvidenceBundle } from './bundle.js';
 import { scan } from './discover.js';
@@ -30,6 +32,24 @@ import { verify } from './verify.js';
 import { readCheckpoints } from './checkpoint.js';
 
 export const DEFAULT_PORT = 4173;
+
+/**
+ * Where the built interface lives, resolved from THIS module rather than the
+ * working directory.
+ *
+ * process.cwd() works when you run from the repo and fails the moment the
+ * package is installed and launched from somewhere else — which is every real
+ * install. Checks the packaged layout first, then the repo layout.
+ */
+export function defaultUiDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, '..', 'ui', 'dist'),   // installed: dist/server.js -> ../ui/dist
+    join(here, '..', '..', 'ui', 'dist'),
+    join(process.cwd(), 'ui', 'dist'),
+  ];
+  return candidates.find((c) => existsSync(join(c, 'index.html'))) ?? candidates[0]!;
+}
 
 export interface ServerOptions {
   logDir: string;
@@ -43,6 +63,8 @@ export interface ServerOptions {
   tsaCaFile?: string;
   /** Payload key, so the UI can show what the agent actually saw. */
   payloadKeyPath?: string;
+  /** Root of the Orisan home, so the UI can show the same setup steps the CLI printed. */
+  orisanHome?: string;
 }
 
 const MIME: Record<string, string> = {
@@ -131,7 +153,7 @@ function sessions(index: EventIndex | null): SessionSummary[] {
 }
 
 export function createApp(opts: ServerOptions) {
-  const uiDir = opts.uiDir ?? join(process.cwd(), 'ui', 'dist');
+  const uiDir = opts.uiDir ?? defaultUiDir();
 
   return createServer((req, res) => {
     void (async () => {
@@ -157,6 +179,14 @@ export function createApp(opts: ServerOptions) {
             anchored: report.anchored,
             witnessConfigured: opts.witnessFile !== undefined,
           });
+          return;
+        }
+
+        if (path === '/api/setup') {
+          // Same words as the terminal: "why isn't this green?" must not have
+          // two different answers depending on where you ask.
+          const home = defaultHome(opts.orisanHome);
+          json(res, 200, { steps: setupSteps({ ...home, logDir: opts.logDir }) });
           return;
         }
 

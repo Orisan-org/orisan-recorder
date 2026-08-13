@@ -24,6 +24,8 @@ export interface EventDetail {
   context: unknown;
 }
 
+export interface SetupStep { label: string; why: string; command?: string; done: boolean }
+
 export interface ProofStep { title: string; did: string; result: string; detected: boolean | null; codes: string[] }
 export interface ProofRun {
   attack: 'edit' | 'delete_tail'; title: string; premise: string;
@@ -80,6 +82,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
+  setup: () => get<{ steps: SetupStep[] }>('/api/setup'),
   explain: () => get<{ screens: Record<ScreenName, ScreenCopy>; glossary: GlossaryEntry[] }>('/api/explain'),
   eventDetail: (seq: number) => get<EventDetail>(`/api/events/${seq}`),
   prove: () => post<ProveResult>('/api/prove', {}),

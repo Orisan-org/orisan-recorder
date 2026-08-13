@@ -1,8 +1,7 @@
 {
   "name": "orisan-recorder",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Recorder for AI agent actions: discovery-led capture with witnessed, non-forgeable integrity.",
+  "version": "0.1.0",
+  "description": "Records what your AI agents do, in a form someone else can check.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -11,13 +10,15 @@
     "orisan-rec": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:ui",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "build:ui": "cd ui && npm install --silent --no-audit --no-fund && vite build",
     "ui": "tsx src/cli.ts ui",
-    "pretest": "npm run build:ui"
+    "pretest": "npm run build:ui",
+    "prepack": "npm run build",
+    "start": "node dist/cli.js start"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
@@ -30,5 +31,12 @@
     "tsx": "^4.23.12",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  }
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "dist",
+    "ui/dist",
+    "install.sh",
+    "README.md"
+  ]
 }

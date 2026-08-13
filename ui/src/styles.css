@@ -111,3 +111,12 @@ tr.expand td { background: var(--panel); padding: 0; }
 .tour-card p { line-height: 1.6; margin: 0 0 12px; }
 .tour-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 .tour-dots { color: var(--muted); font-size: 12.5px; margin-right: auto; align-self: center; }
+
+.setup-list { list-style: none; padding: 0; margin: 10px 0 0; max-width: 68ch; }
+.setup-list li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 10px 0;
+                 border-bottom: 1px solid var(--line); line-height: 1.5; }
+.setup-list li.done { color: var(--muted); }
+.setup-mark { color: var(--green-fg); font-weight: 700; }
+.setup-list li:not(.done) .setup-mark { color: var(--muted); font-weight: 400; }
+.setup-cmd { background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+             padding: 5px 8px; margin-top: 6px; display: inline-block; }

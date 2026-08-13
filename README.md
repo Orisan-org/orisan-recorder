@@ -81,20 +81,33 @@ or the guarantees above degrade to "no careless tampering found":
   data lets whoever rewrites the log re-sign it; `verify` reports it if it finds one
 - **the TSA** (`--tsa`) — an operator-chosen authority proves nothing
 
-## Quick start
+## Install
 
-    npm install && npm run build:ui
+    curl -fsSL https://get.orisan.dev/install.sh | sh
 
-    npx tsx src/cli.ts scan                       # what is on this machine
-    npx tsx src/cli.ts demo /tmp/session --with-ui  # seeded session + UI, no agents needed
+One command. It needs Node 20+ and nothing else — no key, no account, no
+config file. It installs into `~/.orisan/app` (never globally, never `sudo`),
+creates your keys outside the log folder, writes a short clearly-labelled
+example session so the first screen has something in it, and opens the
+interface.
 
-    # record a real agent
-    npx tsx src/cli.ts attach "<mcp config>" --log /tmp/session --key ~/.orisan/signing.key
-    npx tsx src/cli.ts detach "<mcp config>"      # restores byte-identical
+Then it tells you what is still missing and what each piece would buy. The
+banner stays **grey** until a witness is registered — that is not a warning, it
+means completeness has not been established yet and the interface says so
+rather than implying more than it can show.
 
-    npx tsx src/cli.ts checkpoint /tmp/session
-    npx tsx src/cli.ts anchor /tmp/session
-    npx tsx src/cli.ts verify /tmp/session --tsa-ca ca.pem --witness ~/witness.jsonl
+    orisan-rec start          # set up and open the interface
+    orisan-rec scan           # what agents are on this machine
+    orisan-rec attach <cfg> --log <dir>   # record one; detach restores it byte-identically
+    orisan-rec tap <dir> --upstream https://api.anthropic.com --payload-key <p>
+    orisan-rec checkpoint <dir> && orisan-rec anchor <dir>
+    orisan-rec witness register <dir> --url <witness>
+    orisan-rec verify <dir> --tsa-ca ca.pem
+
+### From a checkout
+
+    npm install && npm run build
+    node dist/cli.js start
 
 ## The local UI
 
@@ -162,6 +175,8 @@ are deliberate: here the user's workflow wins, there the evidence does.
 | R2.4 | Integrity banner | done |
 | W1 | External witness: register, submit, verify against it | done |
 | R3 | Relay tap: model calls, encrypted context | done |
+| R4 | Explainability: plain English, Prove it, auditor README, tour | done |
+| R5 | Packaging: one-command install | done |
 | — | Kill switch | not started |
 
 `SECURITY-REVIEW-R1.md` records an adversarial review that found five routes to
