@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Entry point the rewritten config points at:
- *   node shim-main.js --log <dir> --name <server> [--key p] [--witness w] -- <cmd> <args...>
+ *   node shim-main.js --log <dir> --name <server> [--key p] [--witness w]
+ *                     [--session <uuid>] -- <cmd> <args...>
  */
 import { runShim } from './shim.js';
 
@@ -34,6 +35,7 @@ function main(): void {
     args: rest.slice(1),
     ...(get('--key') !== undefined ? { signingKeyPath: get('--key')! } : {}),
     ...(get('--witness') !== undefined ? { witnessFile: get('--witness')! } : {}),
+    ...(get('--session') !== undefined ? { sessionId: get('--session')! } : {}),
   }).then((code) => { process.exitCode = code; });
 }
 

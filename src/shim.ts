@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 import { Recorder } from './recorder.js';
 import { argsDigest, type EventInput } from './schema.js';
@@ -38,6 +39,15 @@ export interface ShimConfig {
   args: string[];
   signingKeyPath?: string;
   witnessFile?: string;
+  /**
+   * Session for this shim's run. Defaults to a fresh uuid at start.
+   *
+   * One shim process wrapping one MCP server is one session, which is the
+   * boundary a reader actually cares about: "what did this server do while it
+   * was running?". It is minted once here rather than per event, so a restart
+   * is visibly a new session instead of silently continuing the old one.
+   */
+  sessionId?: string;
 }
 
 /** Extract a tool name from an MCP tools/call request, if that is what it is. */
@@ -88,15 +98,23 @@ export function takeLines(buffer: string): { lines: string[]; rest: string } {
 export async function runShim(cfg: ShimConfig): Promise<number> {
   const pending = new Map<string, PendingCall>();
 
+  // Minted before anything else, so it exists even if the recorder cannot open
+  // and shows up in the stderr line either way.
+  const sessionId = cfg.sessionId ?? randomUUID();
+
   // A recorder that fails to open must not stop the server from starting.
   let recorder: Recorder | null = null;
   try {
     recorder = Recorder.open(cfg.logDir, {
+      sessionId,
       ...(cfg.signingKeyPath !== undefined ? { signingKeyPath: cfg.signingKeyPath } : {}),
       ...(cfg.witnessFile !== undefined ? { witnessFile: cfg.witnessFile } : {}),
     });
+    process.stderr.write(`[orisan] recording ${cfg.serverName}, session ${sessionId}\n`);
   } catch (e) {
-    process.stderr.write(`[orisan] recording disabled: ${(e as Error).message}\n`);
+    process.stderr.write(
+      `[orisan] recording disabled (session ${sessionId}): ${(e as Error).message}\n`,
+    );
   }
 
   const record = (input: EventInput): void => {

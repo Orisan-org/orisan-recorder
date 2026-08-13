@@ -238,3 +238,53 @@ describe('regression: the attached config must actually be runnable', () => {
     expect(events.filter((e) => e.kind === 'tool_call')).toHaveLength(1);
   }, 30_000);
 });
+
+describe('v3: the shim sets a session at start', () => {
+  function drive(args: string[], calls: string[]): Promise<{ out: string; err: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(TSX, [SHIM, '--log', logDir, '--name', 'fake', ...args, '--', 'node', FAKE],
+        { stdio: ['pipe', 'pipe', 'pipe'] });
+      let out = ''; let err = '';
+      child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      child.on('error', reject);
+      child.on('close', () => resolve({ out, err }));
+      calls.forEach((name, i) => {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } })}\n`);
+      });
+      setTimeout(() => child.stdin.end(), 1200);
+    });
+  }
+
+  it('every event from one run shares one session, and it is announced', async () => {
+    const { err } = await drive(['--key', join(keyDir, 'signing.key')], ['read_file', 'list_dir']);
+    expect(err).toMatch(/recording fake, session [0-9a-f-]{36}/);
+
+    const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    const sessions = new Set(events.map((e) => e.session_id));
+    expect(sessions.size).toBe(1);
+
+    // The announced id is the one on the events, so an operator reading stderr
+    // can find the session in the UI.
+    const announced = /session ([0-9a-f-]{36})/.exec(err)![1];
+    expect([...sessions][0]).toBe(announced);
+  }, 30_000);
+
+  it('a restart is a NEW session, not a silent continuation', async () => {
+    await drive(['--key', join(keyDir, 'signing.key')], ['read_file']);
+    await drive(['--key', join(keyDir, 'signing.key')], ['list_dir']);
+
+    const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
+    expect(new Set(events.map((e) => e.session_id)).size).toBe(2);
+    // One chain across both, still intact.
+    expect(EventStore.open(logDir, { readOnly: true }).store.verifyChainOnly()).toEqual([]);
+  }, 40_000);
+
+  it('an explicit --session is honoured', async () => {
+    const id = '5c0ffee0-0000-4000-8000-00000000beef';
+    await drive(['--key', join(keyDir, 'signing.key'), '--session', id], ['read_file']);
+    const events = EventStore.open(logDir, { readOnly: true }).store.readAll();
+    expect(events.every((e) => e.session_id === id)).toBe(true);
+  }, 30_000);
+});
