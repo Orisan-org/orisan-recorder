@@ -20,6 +20,8 @@ import { readCheckpoints } from './checkpoint.js';
 import { DEFAULT_TSA_URL, drainAnchorQueue, pendingAnchors } from './tsa.js';
 import { formatReport, verify } from './verify.js';
 import { DEFAULT_PORT, startServer } from './server.js';
+import { DEFAULT_TAP_PORT, startTap } from './tap.js';
+import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
   fetchHead, pendingSubmissions, readWitnessConfig, registerLog, submitCheckpoint,
   WitnessKeyMismatch,
@@ -36,6 +38,8 @@ function usage(): string {
     '  orisan-rec detach <config>                restore the original config exactly',
     '  orisan-rec demo <dir> [--with-ui]         write a fabricated session, optionally open the UI',
     '  orisan-rec ui <dir> [--port N]            serve the local UI on 127.0.0.1',
+    '  orisan-rec tap <dir> --upstream <url>     record model calls through an HTTP tap',
+    '        [--port N] [--payload-key <path>] [--key <signing>] [--no-context]',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
@@ -271,6 +275,55 @@ async function main(argv: string[]): Promise<number> {
 
     case 'ui':
       return await serveUi(dir, argv);
+
+    case 'tap': {
+      const upstream = flag(argv, '--upstream');
+      if (!upstream) { process.stderr.write('tap requires --upstream <url>\n'); return 2; }
+      const noContext = argv.includes('--no-context');
+      const payloadKeyPath = flag(argv, '--payload-key');
+
+      // Context capture requires a key. Refusing at startup is safe — no
+      // workflow is running yet — whereas discovering it mid-session would
+      // mean either dropping prompts silently or writing them in the clear.
+      let payloadKey = null;
+      if (!noContext) {
+        if (!payloadKeyPath) {
+          process.stderr.write(
+            'tap requires --payload-key <path> so captured prompts can be encrypted.\n' +
+            'Model calls carry the full context; there is no unencrypted path.\n' +
+            'Use --no-context to record metadata only.\n',
+          );
+          return 2;
+        }
+        payloadKey = existsSync(payloadKeyPath) ? loadKeyFile(payloadKeyPath) : generateKeyFile(payloadKeyPath);
+      }
+
+      const recorder = Recorder.open(dir, {
+        ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+        anchor: { enabled: false },
+      });
+      const portFlag = flag(argv, '--port');
+      const handle = await startTap({
+        upstream,
+        port: portFlag !== undefined ? Number.parseInt(portFlag, 10) : DEFAULT_TAP_PORT,
+        recorder,
+        payloadKey,
+        logDir: dir,
+      });
+
+      process.stdout.write(
+        `tap on http://127.0.0.1:${handle.port} -> ${upstream}\n` +
+        `  session ${recorder.sessionId}\n` +
+        (payloadKey
+          ? `  context: captured and encrypted (key ${payloadKeyPath})\n`
+          : '  context: NOT captured (--no-context); metadata only\n') +
+        '  point your agent at this base URL, e.g.\n' +
+        `    export ANTHROPIC_BASE_URL=http://127.0.0.1:${handle.port}\n` +
+        '  recording never blocks a request: if capture fails, the call still goes through\n',
+      );
+      await new Promise(() => undefined);
+      return 0;
+    }
 
     case 'chain': {
       const { store, recovery } = EventStore.open(dir);

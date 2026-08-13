@@ -108,6 +108,34 @@ green only at 0, red at 1, grey at 2 — and an unrecognised code falls back to 
 Today, with no witness configured, it shows **grey "Cannot prove completeness"**,
 never green. A test greps the built UI bundle for false-confidence strings.
 
+## The tap: model calls
+
+`orisan-rec tap <dir> --upstream https://api.anthropic.com --payload-key <path>`
+runs an HTTP proxy the agent points its base URL at. Every model call is
+recorded: the full context in and the decision out.
+
+Two rules, both tested:
+
+- **Fail open.** Every capture path is wrapped and runs after the response is
+  closed out. If the recorder cannot open, if sealing fails, if the tap has a
+  bug — the request still reaches the model and the response still reaches the
+  agent. There are tests that break sealing, break the recorder, and kill the
+  upstream, and assert the call still succeeds.
+- **Every captured context is encrypted.** A model call carries the whole
+  prompt. It goes through the same sodium `crypto_box_seal` path as any other
+  payload or it is not captured at all — `--payload-key` is required, and
+  `--no-context` is the only way to run without it. Tests assert the prompt
+  appears in neither the event log nor the blob bytes, and that the key holder
+  can read both context and decision.
+
+The event itself holds only non-secret facts: provider, model, message and tool
+counts, stop reason, tool names, token usage, duration, a digest over the
+canonical request, and the `payload_ref`.
+
+**Measured overhead** on an 80KB context against a local upstream, 300 calls:
+median **+1.29ms** buffered, **+1.25ms** streaming (p95 +1.7ms / +2.0ms). Against
+a real provider that is well inside the noise.
+
 ## Attach / detach
 
 `attach` rewrites an MCP config so each stdio server runs behind a passthrough
@@ -133,6 +161,7 @@ are deliberate: here the user's workflow wins, there the evidence does.
 | R2.3 | Local UI, evidence export | done |
 | R2.4 | Integrity banner | done |
 | W1 | External witness: register, submit, verify against it | done |
+| R3 | Relay tap: model calls, encrypted context | done |
 | — | Kill switch | not started |
 
 `SECURITY-REVIEW-R1.md` records an adversarial review that found five routes to
@@ -159,6 +188,7 @@ the list of what was wrong is more useful than a claim that nothing is.
     src/server.ts     R2 local UI server (loopback only)
     src/banner.ts     R2 integrity banner  [Tier C]
     src/witness-service.ts  W1 witness client, pinned key  [Tier C]
+    src/tap.ts        R3 model-call tap: fail-open, encrypted context
     src/bundle.ts     R2 evidence bundle
     src/zip.ts        minimal zip writer
     src/demo.ts       fake session generator
