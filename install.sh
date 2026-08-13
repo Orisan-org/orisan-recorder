@@ -2,7 +2,13 @@
 #
 # Orisan Recorder installer.
 #
-#   curl -fsSL https://get.orisan.dev/install.sh | sh
+#   curl -fsSL https://orisan.org/install.sh | sh
+#
+# NOT YET PUBLISHED. orisan.org is live but does not serve this file, and the
+# npm package is not on the registry, so the line above will not work until
+# both are true. Until then use ORISAN_LOCAL_TARBALL, or install from a
+# checkout. Advertising a command that 404s is the exact failure this project
+# exists to avoid, so the README documents what works today instead.
 #
 # POSIX sh, not bash: this has to run on a minimal image where /bin/sh is dash
 # and bash may not exist at all. No arrays, no [[ ]], no local -n.
@@ -20,6 +26,7 @@ set -eu
 ORISAN_HOME="${ORISAN_HOME:-$HOME/.orisan}"
 APP_DIR="$ORISAN_HOME/app"
 PKG="${ORISAN_PKG:-orisan-recorder}"
+PKG_HOME="https://orisan.org"
 MIN_NODE_MAJOR=20
 
 say() { printf '%s\n' "$*"; }
@@ -64,7 +71,14 @@ if [ -n "${ORISAN_LOCAL_TARBALL:-}" ]; then
   # than reaching for the registry.
   npm install --silent --no-audit --no-fund "$ORISAN_LOCAL_TARBALL" >/dev/null
 else
-  npm install --silent --no-audit --no-fund "$PKG" >/dev/null
+  if ! npm install --silent --no-audit --no-fund "$PKG" >/dev/null 2>&1; then
+    die "Could not install '$PKG' from npm.
+  The package is not published yet. Until it is, install from a checkout:
+      git clone <repo> && cd orisan-recorder && npm install && npm run build && node dist/cli.js start
+  Or point this script at a built tarball:
+      ORISAN_LOCAL_TARBALL=/path/to/orisan-recorder-0.1.0.tgz sh install.sh
+  See $PKG_HOME"
+  fi
 fi
 
 BIN="$APP_DIR/node_modules/.bin/orisan-rec"

@@ -83,13 +83,24 @@ or the guarantees above degrade to "no careless tampering found":
 
 ## Install
 
-    curl -fsSL https://get.orisan.dev/install.sh | sh
+**Today, from a checkout** — this is the path that works right now:
 
-One command. It needs Node 20+ and nothing else — no key, no account, no
-config file. It installs into `~/.orisan/app` (never globally, never `sudo`),
-creates your keys outside the log folder, writes a short clearly-labelled
-example session so the first screen has something in it, and opens the
-interface.
+    git clone <repo> && cd orisan-recorder
+    npm install && npm run build
+    node dist/cli.js start
+
+**Once published**, the one-liner below will do the same thing. It does not
+work yet: `orisan.org` does not serve `install.sh`, and `orisan-recorder` is
+not on the npm registry. The script is written and tested — it installs
+correctly from a local tarball — but the hosted command is not a claim we can
+make until both are true.
+
+    curl -fsSL https://orisan.org/install.sh | sh    # not live yet
+
+Either path needs Node 20+ and nothing else — no key, no account, no config
+file. It installs into `~/.orisan/app` (never globally, never `sudo`), creates
+your keys outside the log folder, writes a short clearly-labelled example
+session so the first screen has something in it, and opens the interface.
 
 Then it tells you what is still missing and what each piece would buy. The
 banner stays **grey** until a witness is registered — that is not a warning, it

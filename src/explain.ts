@@ -200,6 +200,8 @@ export const FINDING_COPY: Record<string, string> = {
     'The witness could not be reached, so its copy could not be compared. This is a connection problem, not a finding about your records.',
   witness_missing: 'The witness records for this log could not be found.',
   witness_empty: 'The witness has not been sent anything for this log yet.',
+  witness_on_localhost:
+    'The witness is running on this same machine, so whoever can change the records can also delete the witness. It has to run somewhere you do not control for its memory to count.',
   witness_inside_log_dir:
     'The witness notes are kept in the same folder as the log. Anyone who can change one can change the other, so they do not add much.',
   no_checkpoints:

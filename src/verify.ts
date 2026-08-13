@@ -203,6 +203,27 @@ function checkCheckpointAgainstEvents(
  * An explicit opensslPath is honoured as given (tests rely on that) but must
  * itself be absolute.
  */
+/**
+ * Is this witness running on the same machine as the recorder?
+ *
+ * A witness exists to remember what the operator can delete. One on loopback
+ * is a file the operator can `rm`, so it provides no external memory at all —
+ * and green on that basis would be precisely the false reassurance this
+ * project was built to avoid. Narrow on purpose: only loopback is refused. A
+ * witness on another host, even one the same company runs, is a deployment
+ * question this code cannot answer from a URL.
+ */
+export function witnessIsLoopback(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0'
+    || /^127\./.test(host) || host.endsWith('.localhost');
+}
+
 export function resolveOpenssl(explicit?: string): string | null {
   if (explicit !== undefined) return isAbsolute(explicit) ? explicit : null;
   for (const candidate of [
@@ -621,6 +642,16 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
             message:
               `checkpoint(s) after index ${ws.head.latest_index} have not been submitted to the witness; ` +
               'they are not externally committed yet',
+          });
+        } else if (witnessIsLoopback(ws.url)) {
+          // Everything agreed — but with a witness on this machine, agreement
+          // proves only that the log agrees with itself.
+          findings.push({
+            severity: 'cannot_verify',
+            code: 'witness_on_localhost',
+            message:
+              `the witness at ${ws.url} runs on this machine, so it is under the same control as the log ` +
+              'it is meant to vouch for; completeness cannot be established against it',
           });
         } else {
           serviceSatisfiesCompleteness = true;

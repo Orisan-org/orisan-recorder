@@ -409,3 +409,15 @@ describe('R4: the auditor README', () => {
     }
   });
 });
+
+describe('the interface and the CLI must agree about the witness', () => {
+  it('the server reads witness.json rather than reporting no witness', async () => {
+    // The first version of verifyNow() never read the witness config, so the
+    // banner said "no witness" on a log that had one registered — meaning it
+    // could never have gone green however the witness was deployed.
+    const src = readFileSync(join(process.cwd(), 'src', 'server.ts'), 'utf8');
+    expect(src).toMatch(/readWitnessConfig/);
+    expect(src).toMatch(/fetchHead/);
+    expect(src).toMatch(/witnessService:/);
+  });
+});

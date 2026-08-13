@@ -85,7 +85,14 @@ const run = async (over?: Partial<WitnessServiceInput>, f?: FetchLike) =>
 describe('the truthful clean', () => {
   it('an honest, anchored, witnessed log is CLEAN at exit 0', async () => {
     await honestLog();
-    const r = await run();
+    // The fixture witness necessarily runs on loopback, which verify now
+    // refuses to count — a witness the operator can delete is not external
+    // memory. The URL is presented as a hosted one so this exercises the
+    // production path; the loopback case has its own test below.
+    const r = verify(dir, {
+      tsaCaFile: tsa.caFile,
+      witnessService: { ...(await witnessInput()), url: 'https://witness.orisan.org' },
+    });
     expect(r.findings).toEqual([]);
     expect(r.verdict).toBe('clean');
     expect(r.exitCode).toBe(EXIT_CLEAN);
@@ -331,5 +338,40 @@ describe('the five R1 attacks, re-run with a witness configured', () => {
     const cps = readFileSync(join(dir, 'checkpoints.jsonl'), 'utf8').trim().split('\n');
     writeFileSync(join(dir, 'checkpoints.jsonl'), [cps[0]!, cps[2]!].map((l) => `${l}\n`).join(''));
     expect((await run()).exitCode).toBe(EXIT_TAMPERED);
+  });
+});
+
+describe('a witness on the same machine is not external memory', () => {
+  it('agreement with a loopback witness does not reach green', async () => {
+    await honestLog(10, 10);
+    const r = await run();
+    // Everything agrees — the fixture witness is real and holds every
+    // checkpoint — but it runs here, so completeness is not established.
+    expect(r.findings.some((f) => f.code === 'witness_on_localhost')).toBe(true);
+    expect(r.exitCode).toBe(EXIT_CANNOT_VERIFY);
+    expect(r.exitCode).not.toBe(EXIT_CLEAN);
+    // And it is a gap, not an accusation.
+    expect(r.findings.some((f) => f.severity === 'tampered')).toBe(false);
+  });
+
+  it('a witness on another host is accepted', async () => {
+    await honestLog(10, 10);
+    const r = verify(dir, {
+      tsaCaFile: tsa.caFile,
+      witnessService: { ...(await witnessInput()), url: 'https://witness.orisan.org' },
+    });
+    expect(r.findings.some((f) => f.code === 'witness_on_localhost')).toBe(false);
+    expect(r.verdict).toBe('clean');
+    expect(r.exitCode).toBe(EXIT_CLEAN);
+  });
+
+  it('recognises the loopback forms', async () => {
+    const { witnessIsLoopback } = await import('../src/verify.js');
+    for (const u of ['http://localhost:8080', 'http://127.0.0.1:9', 'https://[::1]:443', 'http://0.0.0.0:1']) {
+      expect(witnessIsLoopback(u), u).toBe(true);
+    }
+    for (const u of ['https://witness.orisan.org', 'http://10.0.0.5:8080', 'https://example.invalid']) {
+      expect(witnessIsLoopback(u), u).toBe(false);
+    }
   });
 });

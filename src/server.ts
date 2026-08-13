@@ -28,7 +28,8 @@ import { buildEvidenceBundle } from './bundle.js';
 import { scan } from './discover.js';
 import { EventIndex } from './index-db.js';
 import { EventStore, peekHeadSeq } from './store.js';
-import { verify } from './verify.js';
+import { verify, type VerifyReport } from './verify.js';
+import { fetchHead, readWitnessConfig, type WitnessConfig } from './witness-service.js';
 import { readCheckpoints } from './checkpoint.js';
 
 export const DEFAULT_PORT = 4173;
@@ -95,10 +96,36 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; } catch { return {}; }
 }
 
-function verifyNow(opts: ServerOptions) {
-  return verify(opts.logDir, {
+/**
+ * Verify, including asking the witness what it remembers.
+ *
+ * This has to be async because the head is fetched over the network, and the
+ * first version of it was not: the server called verify() directly and never
+ * read witness.json, so the interface reported "no witness" on a log that had
+ * one registered — the banner could never have gone green no matter how the
+ * witness was deployed. Only running it end to end showed that.
+ */
+async function verifyNow(opts: ServerOptions): Promise<VerifyReport> {
+  const base = {
     ...(opts.tsaCaFile !== undefined ? { tsaCaFile: opts.tsaCaFile } : {}),
     ...(opts.witnessFile !== undefined ? { witnessFile: opts.witnessFile } : {}),
+  };
+
+  let cfg: WitnessConfig | null = null;
+  try { cfg = readWitnessConfig(opts.logDir); } catch { cfg = null; }
+  if (!cfg) return verify(opts.logDir, base);
+
+  const fetched = await fetchHead(cfg);
+  return verify(opts.logDir, {
+    ...base,
+    witnessService: {
+      logId: cfg.log_id,
+      url: cfg.url,
+      reachable: fetched.reachable,
+      ...(fetched.error !== undefined ? { error: fetched.error } : {}),
+      ...(fetched.head !== undefined ? { head: fetched.head } : {}),
+      ...(fetched.signatureValid !== undefined ? { signatureValid: fetched.signatureValid } : {}),
+    },
   });
 }
 
@@ -169,7 +196,7 @@ export function createApp(opts: ServerOptions) {
         if (path === '/api/scan') { json(res, 200, scan()); return; }
 
         if (path === '/api/status') {
-          const report = verifyNow(opts);
+          const report = await verifyNow(opts);
           json(res, 200, {
             logDir: opts.logDir,
             banner: bannerFor({ exitCode: report.exitCode, findings: report.findings }),
@@ -302,7 +329,7 @@ export function createApp(opts: ServerOptions) {
         }
 
         if (path === '/api/export') {
-          const zip = buildEvidenceBundle(opts.logDir, { report: verifyNow(opts) });
+          const zip = buildEvidenceBundle(opts.logDir, { report: await verifyNow(opts) });
           res.writeHead(200, {
             'content-type': 'application/zip',
             'content-length': zip.length,
