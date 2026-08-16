@@ -22,6 +22,7 @@ import { formatReport, verify } from './verify.js';
 import { DEFAULT_PORT, startServer } from './server.js';
 import { DEFAULT_TAP_PORT, startTap } from './tap.js';
 import { defaultHome, prepareStart, setupSteps, startBanner } from './quickstart.js';
+import { runShowcase } from './showcase.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
   fetchHead, pendingSubmissions, readWitnessConfig, registerLog, repointWitness,
@@ -35,10 +36,11 @@ function usage(): string {
     '',
     'Usage:',
     '  orisan-rec start                          set everything up and open the interface',
+    '  orisan-rec showcase [--pause ms] [--keep] run the whole demo, start to finish',
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
     '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
     '  orisan-rec detach <config>                restore the original config exactly',
-    '  orisan-rec demo <dir> [--with-ui]         write a fabricated session, optionally open the UI',
+    '  orisan-rec demo <dir> [--events N] [--with-ui]  write a fabricated session',
     '  orisan-rec ui <dir> [--port N] [--payload-key <p>]   serve the local UI',
     '  orisan-rec tap <dir> --upstream <url>     record model calls through an HTTP tap',
     '        [--port N] [--payload-key <path>] [--key <signing>] [--no-context]',
@@ -129,6 +131,34 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(usage());
     return 0;
   }
+  if (cmd === 'showcase') {
+    const pauseFlag = flag(argv, '--pause');
+    // Drive the real CLI as a subprocess: what is on screen is what ran.
+    //
+    // Resolved from THIS module, not via shimRunner, which prefers dist/. In a
+    // checkout dist can be older than src, and the first run of this command
+    // silently demoed a stale build that lacked a fix made minutes earlier.
+    // The showcase has to run the code you invoked, or it is demonstrating
+    // something other than what you are looking at.
+    const here = fileURLToPath(import.meta.url);
+    const self = here.endsWith('.ts')
+      ? [pathJoin(here, '..', '..', 'node_modules', '.bin', 'tsx'), here]
+      : [process.execPath, here];
+
+    const r = await runShowcase({
+      cli: self,
+      ...(pauseFlag !== undefined ? { pauseMs: Number.parseInt(pauseFlag, 10) } : {}),
+      ...(argv.includes('--keep') ? { keep: true } : {}),
+      ...(flag(argv, '--dir') !== undefined ? { dir: flag(argv, '--dir')! } : {}),
+      ...(flag(argv, '--witness') !== undefined ? { witnessUrl: flag(argv, '--witness')! } : {}),
+      ...(flag(argv, '--tsa') !== undefined ? { tsaUrl: flag(argv, '--tsa')! } : {}),
+      ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
+      ...(argv.includes('--plain') ? { plain: true } : {}),
+    });
+    // A demo that fails must exit non-zero, or CI would call it a pass.
+    return r.ok ? 0 : 1;
+  }
+
   if (cmd === 'start') {
     const r = prepareStart({ ...(argv.includes('--no-demo') ? { noDemo: true } : {}) });
     const portFlag = flag(argv, '--port');
@@ -312,7 +342,10 @@ async function main(argv: string[]): Promise<number> {
 
   switch (cmd) {
     case 'demo': {
-      const r = generateDemoSession(dir);
+      const eventsFlag = flag(argv, '--events');
+      const r = generateDemoSession(dir, {
+        ...(eventsFlag !== undefined ? { count: Number.parseInt(eventsFlag, 10) } : {}),
+      });
       process.stdout.write(
         `wrote ${r.events} events (${r.flagged} flagged) to ${r.dir}\n` +
         `head: seq=${r.head.seq} hash=${r.head.hash}\n`,

@@ -26,9 +26,12 @@ function IntegrityBanner({ banner, glossary }: { banner: Banner; glossary: Gloss
       <div className="head">{banner.headline}</div>
       <div className="detail"><Annotated text={banner.detail} glossary={glossary} /></div>
 
-      {banner.findings.length > 0 && (
+      {/* Red's detail IS the first finding in plain English, so listing it
+          again directly underneath reads as a stutter. Show only findings the
+          headline sentence has not already said. */}
+      {banner.findings.filter((f) => f.plain !== banner.detail).length > 0 && (
         <ul className="findings">
-          {banner.findings.slice(0, 6).map((f) => (
+          {banner.findings.filter((f) => f.plain !== banner.detail).slice(0, 6).map((f) => (
             <li key={f.code + f.message}><Annotated text={f.plain} glossary={glossary} /></li>
           ))}
         </ul>

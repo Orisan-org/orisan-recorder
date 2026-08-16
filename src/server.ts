@@ -28,7 +28,7 @@ import { buildEvidenceBundle } from './bundle.js';
 import { scan } from './discover.js';
 import { EventIndex } from './index-db.js';
 import { EventStore, peekHeadSeq } from './store.js';
-import { verify, type VerifyReport } from './verify.js';
+import { verify, type VerifyOptions, type VerifyReport } from './verify.js';
 import { fetchHead, readWitnessConfig, type WitnessConfig } from './witness-service.js';
 import { readCheckpoints } from './checkpoint.js';
 
@@ -105,18 +105,26 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
  * one registered — the banner could never have gone green no matter how the
  * witness was deployed. Only running it end to end showed that.
  */
-async function verifyNow(opts: ServerOptions): Promise<VerifyReport> {
-  const base = {
+/**
+ * Verify options including what the witness currently says.
+ *
+ * Shared by /api/status and /api/prove. It was inlined in verifyNow, so the
+ * Prove it page ran WITHOUT the witness and reported that deleting the tail
+ * could not be caught — on a log that had a witness registered. The trust page
+ * was understating the product to its own users.
+ */
+async function withWitness(opts: ServerOptions): Promise<VerifyOptions> {
+  const base: VerifyOptions = {
     ...(opts.tsaCaFile !== undefined ? { tsaCaFile: opts.tsaCaFile } : {}),
     ...(opts.witnessFile !== undefined ? { witnessFile: opts.witnessFile } : {}),
   };
 
   let cfg: WitnessConfig | null = null;
   try { cfg = readWitnessConfig(opts.logDir); } catch { cfg = null; }
-  if (!cfg) return verify(opts.logDir, base);
+  if (!cfg) return base;
 
   const fetched = await fetchHead(cfg);
-  return verify(opts.logDir, {
+  return {
     ...base,
     witnessService: {
       logId: cfg.log_id,
@@ -126,7 +134,11 @@ async function verifyNow(opts: ServerOptions): Promise<VerifyReport> {
       ...(fetched.head !== undefined ? { head: fetched.head } : {}),
       ...(fetched.signatureValid !== undefined ? { signatureValid: fetched.signatureValid } : {}),
     },
-  });
+  };
+}
+
+async function verifyNow(opts: ServerOptions): Promise<VerifyReport> {
+  return verify(opts.logDir, await withWitness(opts));
 }
 
 /**
@@ -270,10 +282,9 @@ export function createApp(opts: ServerOptions) {
         }
 
         if (path === '/api/prove' && req.method === 'POST') {
-          json(res, 200, prove(opts.logDir, {
-            ...(opts.tsaCaFile !== undefined ? { tsaCaFile: opts.tsaCaFile } : {}),
-            ...(opts.witnessFile !== undefined ? { witnessFile: opts.witnessFile } : {}),
-          }));
+          // The witness head is about the log id, not the copy on disk, so the
+          // same fetched head applies to both attack workspaces.
+          json(res, 200, prove(opts.logDir, await withWitness(opts)));
           return;
         }
 

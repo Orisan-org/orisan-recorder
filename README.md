@@ -81,6 +81,19 @@ or the guarantees above degrade to "no careless tampering found":
   data lets whoever rewrites the log re-sign it; `verify` reports it if it finds one
 - **the TSA** (`--tsa`) — an operator-chosen authority proves nothing
 
+## See it work
+
+    orisan-rec showcase
+
+Forty-five seconds, no typing: discovery, a recorded session, a signed and
+externally timestamped batch, a CLEAN check, then the end of the log is deleted
+— the chain-only check calls it intact, and the full check catches it because
+the witness still remembers. Recording and screenshots in [media/](media/).
+
+It runs the real commands as subprocesses, against the live witness and a real
+timestamp authority. If a step misbehaves it prints SHOWCASE FAILED and exits
+non-zero rather than reaching a reassuring ending.
+
 ## Install
 
 **Today, from a checkout** — this is the path that works right now:

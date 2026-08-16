@@ -104,3 +104,57 @@ export function startLocalTsa(url = 'https://tsa.test.invalid/tsr'): LocalTsa {
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
+
+/**
+ * The same local authority, reachable over HTTP.
+ *
+ * The showcase spawns the real CLI, which talks RFC 3161 over the network, so
+ * testing it offline needs a real socket rather than an injected fetch.
+ */
+export interface LocalTsaServer {
+  url: string;
+  caFile: string;
+  close: () => Promise<void>;
+}
+
+export async function startLocalTsaHttp(tsa: LocalTsa): Promise<LocalTsaServer> {
+  const { createServer } = await import('node:http');
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync: write, readFileSync: read } = await import('node:fs');
+  let n = 0;
+
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      try {
+        const i = ++n;
+        const reqPath = join(tsa.dir, `http-req-${i}.tsq`);
+        const respPath = join(tsa.dir, `http-resp-${i}.tsr`);
+        write(reqPath, Buffer.concat(chunks));
+        execFileSync('openssl', [
+          'ts', '-reply', '-config', join(tsa.dir, 'tsa.cnf'),
+          '-queryfile', reqPath, '-out', respPath,
+        ], { cwd: tsa.dir, stdio: ['ignore', 'ignore', 'pipe'] });
+        const body = read(respPath);
+        res.writeHead(200, { 'content-type': 'application/timestamp-reply', 'content-length': body.length });
+        res.end(body);
+      } catch (e) {
+        res.writeHead(500);
+        res.end((e as Error).message);
+      }
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}/tsr`,
+        caFile: tsa.caFile,
+        close: () => new Promise<void>((d) => { server.close(() => d()); }),
+      });
+    });
+  });
+}
