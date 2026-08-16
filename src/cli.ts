@@ -24,8 +24,8 @@ import { DEFAULT_TAP_PORT, startTap } from './tap.js';
 import { defaultHome, prepareStart, setupSteps, startBanner } from './quickstart.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
-  fetchHead, pendingSubmissions, readWitnessConfig, registerLog, submitCheckpoint,
-  WitnessKeyMismatch,
+  fetchHead, pendingSubmissions, readWitnessConfig, registerLog, repointWitness,
+  submitCheckpoint, WitnessKeyMismatch,
 } from './witness-service.js';
 import { generateSigningKey, loadSigningKey, signingKeyPath } from './checkpoint.js';
 
@@ -47,6 +47,7 @@ function usage(): string {
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
     '  orisan-rec witness register <dir> --url <witness>   register and PIN the witness key',
     '  orisan-rec witness submit <dir>           submit any unwitnessed checkpoints',
+    '  orisan-rec witness repoint <dir> --url <new>  move a log to a new witness hostname',
     '  orisan-rec verify <dir> [--tsa-ca <pem>] [--witness <file>] [--tsa <url>]',
     '                                            full verification',
     '',
@@ -277,6 +278,27 @@ async function main(argv: string[]): Promise<number> {
         }
       }
       return failed > 0 ? 2 : 0;
+    }
+
+    if (sub === 'repoint') {
+      const url = flag(argv, '--url');
+      if (!url) { process.stderr.write('witness repoint requires --url <new witness url>\n'); return 2; }
+      const before = readWitnessConfig(wdir);
+      const r = await repointWitness(wdir, url, readCheckpoints(wdir));
+      if (!r.ok) {
+        process.stderr.write(
+          `refused to repoint (${r.refusal.code})\n\n  ${r.refusal.message}\n\n` +
+          `  Still pointed at ${before?.url ?? '(not registered)'}. Nothing was changed.\n`,
+        );
+        return 1;
+      }
+      process.stdout.write(
+        `repointed ${r.from}\n        -> ${r.to}\n` +
+        `  log_id       ${r.config.log_id}\n` +
+        `  pinned key   unchanged — the new address answered with the same key\n` +
+        `  witness head index ${r.head.latest_index}, matching this log\n`,
+      );
+      return 0;
     }
 
     process.stderr.write(`unknown witness subcommand: ${sub}\n`);

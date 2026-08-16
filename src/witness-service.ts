@@ -265,3 +265,166 @@ export async function fetchHead(cfg: WitnessConfig, fetchImpl?: FetchLike): Prom
 export function pendingSubmissions(dir: string, checkpoints: readonly SignedCheckpoint[]): SignedCheckpoint[] {
   return checkpoints.filter((cp) => !hasReceipt(dir, cp.index));
 }
+
+/** What our local state says the witness should be holding. */
+export interface ExpectedWitnessState {
+  index: number;
+  seq_to: number;
+  merkle_root: string;
+}
+
+/**
+ * The highest checkpoint we hold a receipt for, and its root.
+ *
+ * Receipts are signed by the witness, so this is not "what we think we sent"
+ * but "what the witness confirmed receiving". That is the right thing to hold
+ * a new witness to.
+ */
+export function expectedWitnessState(
+  dir: string,
+  checkpoints: readonly SignedCheckpoint[],
+): ExpectedWitnessState | null {
+  const witnessed = checkpoints.filter((cp) => hasReceipt(dir, cp.index));
+  if (witnessed.length === 0) return null;
+  const last = witnessed.reduce((a, b) => (b.index > a.index ? b : a));
+  return { index: last.index, seq_to: last.seq_to, merkle_root: last.merkle_root };
+}
+
+export interface RepointRefusal {
+  code:
+    | 'not_registered'
+    | 'same_url'
+    | 'unreachable'
+    | 'key_mismatch'
+    | 'wrong_log'
+    | 'no_record_of_log'
+    | 'behind'
+    | 'ahead'
+    | 'root_mismatch';
+  message: string;
+}
+
+export type RepointResult =
+  | { ok: true; from: string; to: string; config: WitnessConfig; head: WitnessHead }
+  | { ok: false; refusal: RepointRefusal };
+
+/**
+ * Move a registered log to a new witness hostname.
+ *
+ * The pinned key does NOT change. That is the whole point: a repoint is
+ * "the same witness now answers somewhere else", and the way you prove it is
+ * the same witness is that it can still sign with the key you pinned. If the
+ * key differs this is a different witness, which is a re-registration and a
+ * decision for a human — never something a repoint does quietly.
+ *
+ * The new URL must also already hold what the old one confirmed. A witness
+ * that has never seen this log has no memory to offer, and one that disagrees
+ * about a root it should be holding is not the same witness's data.
+ */
+export async function repointWitness(
+  dir: string,
+  newUrl: string,
+  checkpoints: readonly SignedCheckpoint[],
+  fetchImpl?: FetchLike,
+): Promise<RepointResult> {
+  const current = readWitnessConfig(dir);
+  if (!current) {
+    return { ok: false, refusal: { code: 'not_registered', message: 'this log has no witness registered; use `witness register`' } };
+  }
+
+  const to = newUrl.replace(/\/+$/, '');
+  if (to === current.url) {
+    return { ok: false, refusal: { code: 'same_url', message: `already pointed at ${to}` } };
+  }
+
+  // Probe the new URL with the EXISTING pinned key. fetchHead does the
+  // signature check itself, against whatever key the config carries.
+  const probe: WitnessConfig = { ...current, url: to };
+  const fetched = await fetchHead(probe, fetchImpl);
+
+  if (!fetched.reachable || !fetched.head) {
+    return {
+      ok: false,
+      refusal: {
+        code: fetched.error?.includes('404') ? 'no_record_of_log' : 'unreachable',
+        message:
+          `could not read a head for this log from ${to}: ${fetched.error ?? 'unknown error'}. ` +
+          'Nothing was changed.',
+      },
+    };
+  }
+
+  if (fetched.signatureValid !== true) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'key_mismatch',
+        message:
+          `${to} answered, but not with the key pinned when this log was registered. ` +
+          'That is a different witness, not the same one at a new address. Re-pinning it here would ' +
+          'defeat the pinning entirely, so it is refused. If you genuinely mean to move to a different ' +
+          'witness, that is a new registration and a decision to make deliberately.',
+      },
+    };
+  }
+
+  const head = fetched.head;
+  if (head.log_id !== current.log_id) {
+    return {
+      ok: false,
+      refusal: { code: 'wrong_log', message: `${to} answered about log ${head.log_id}, not ${current.log_id}` },
+    };
+  }
+
+  const expected = expectedWitnessState(dir, checkpoints);
+  if (expected === null) {
+    // Nothing has been witnessed yet, so there is no memory to preserve and
+    // nothing to check against. Moving is harmless.
+    const config: WitnessConfig = { ...current, url: to };
+    writeWitnessConfig(dir, config);
+    return { ok: true, from: current.url, to, config, head };
+  }
+
+  if (head.latest_index < expected.index) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'behind',
+        message:
+          `${to} only holds up to checkpoint ${head.latest_index}, but ${current.url} confirmed ` +
+          `checkpoint ${expected.index}. Moving would silently discard the witness's memory of ` +
+          `${expected.index - head.latest_index} checkpoint(s) — exactly the deletion a witness exists to catch.`,
+      },
+    };
+  }
+
+  if (head.latest_index > expected.index) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'ahead',
+        message:
+          `${to} holds checkpoint ${head.latest_index}, but the newest one we have a receipt for is ` +
+          `${expected.index}. It has seen submissions this machine did not make, which means either ` +
+          'another writer is using this log id or this is not the same log.',
+      },
+    };
+  }
+
+  if (head.merkle_root !== expected.merkle_root) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'root_mismatch',
+        message:
+          `${to} records a different summary for checkpoint ${expected.index}: it has ` +
+          `${head.merkle_root} where this log has ${expected.merkle_root}. Same index, different content ` +
+          'is a fork.',
+      },
+    };
+  }
+
+  const config: WitnessConfig = { ...current, url: to };
+  writeWitnessConfig(dir, config);
+  return { ok: true, from: current.url, to, config, head };
+}

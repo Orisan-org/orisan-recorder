@@ -113,6 +113,7 @@ rather than implying more than it can show.
     orisan-rec tap <dir> --upstream https://api.anthropic.com --payload-key <p>
     orisan-rec checkpoint <dir> && orisan-rec anchor <dir>
     orisan-rec witness register <dir> --url <witness>
+    orisan-rec witness repoint <dir> --url <new>   # move to a new hostname
     orisan-rec verify <dir> --tsa-ca ca.pem
 
 ### From a checkout
