@@ -57,7 +57,7 @@ describe('append and read back', () => {
     store.close();
 
     expect(listSegments(dir)).toEqual([segmentName(0), segmentName(1), segmentName(2)]);
-    const seqs = EventStore.open(dir).store.readAll().map((e) => e.seq);
+    const seqs = EventStore.open(dir, { readOnly: true }).store.readAll().map((e) => e.seq);
     expect(seqs).toEqual([...Array(250).keys()]);
   });
 
@@ -90,7 +90,7 @@ describe('tamper detection at the store level', () => {
     lines[42] = JSON.stringify(target);
     writeFileSync(path, `${lines.join('\n')}\n`);
 
-    const breaks = EventStore.open(dir).store.verifyChainOnly();
+    const breaks = EventStore.open(dir, { readOnly: true }).store.verifyChainOnly();
     expect(breaks).toHaveLength(1);
     expect(breaks[0]!.seq).toBe(42);
     expect(breaks[0]!.reason).toBe('hash_mismatch');

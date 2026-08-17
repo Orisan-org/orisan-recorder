@@ -130,7 +130,7 @@ describe('confirmed attacks — each must be caught', () => {
 
   it('A2: delete an event, re-seal from genesis, re-anchor with a fresh key', async () => {
     await honestLog();
-    const all = EventStore.open(dir).store.readAll().filter((e) => e.kind !== 'flag');
+    const all = EventStore.open(dir, { readOnly: true }).store.readAll().filter((e) => e.kind !== 'flag');
     reseal(all);
     rmSync(join(dir, 'checkpoints.jsonl'), { force: true });
     rmSync(join(dir, 'anchors'), { recursive: true, force: true });
@@ -140,7 +140,7 @@ describe('confirmed attacks — each must be caught', () => {
     // Fresh keypair, fresh checkpoint, genuinely anchored — but anchored NOW,
     // long after the events it claims to cover.
     const kf = generateSigningKey(dir, signingKeyPath);
-    const events = EventStore.open(dir).store.readAll();
+    const events = EventStore.open(dir, { readOnly: true }).store.readAll();
     const cp = buildCheckpoint(events.map((e) => e.hash), 0, 'manual', kf);
     appendCheckpoint(dir, cp);
     await anchorCheckpoint(dir, cp, tsa.anchorOptions);
@@ -235,7 +235,7 @@ describe('the witness', () => {
 describe('Merkle leaves are recomputed from content', () => {
   it('an event edited while keeping its stored hash breaks the anchored root', async () => {
     await honestLog(20, 10);
-    const all = EventStore.open(dir).store.readAll();
+    const all = EventStore.open(dir, { readOnly: true }).store.readAll();
     // Edit the payload, leave `hash` untouched. Previously the Merkle root was
     // built from that stale hash, so this passed the anchored check entirely.
     const edited = all.map((e) => (e.seq === 5 ? { ...e, outcome: 'ok (actually failed)' } : e));

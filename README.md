@@ -68,6 +68,27 @@ Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine
 No witness, no anchor, no public key, no TSA CA, an unresolvable openssl, or a
 corrupt file all yield 2. Reaching 0 requires every check to have actually run.
 
+## One writer per log directory
+
+A log directory takes exactly one recorder at a time, enforced by `writer.lock`
+in that directory. A second writer refuses to start and names the process
+holding it; it does not queue and it does not proceed.
+
+This is not tidiness. Sequence numbers and the running chain hash live in the
+writing process's memory, so two recorders both believe they own the head and
+both write it — 30 events each produced 60 lines with 30 distinct sequence
+numbers, every one duplicated with a different `prev_hash`. Nothing on disk
+records which ordering really happened, so the log cannot be repaired
+afterwards, only discarded.
+
+A lock naming a dead process **on this host** is reclaimed automatically, so a
+recorder killed with SIGKILL does not brick the directory. A lock from another
+hostname is refused instead, because this machine cannot ask whether that
+process is alive and guessing wrong causes the corruption the lock prevents.
+
+Reading is never blocked: `verify`, the UI and every export open read-only, take
+no lock, and work fine against a log that is being written.
+
 ## Custody: the part that is operational, not cryptographic
 
 Three things must live somewhere the recorder's operator cannot silently rewrite,
@@ -213,6 +234,7 @@ the list of what was wrong is more useful than a claim that nothing is.
 
     src/schema.ts     event shape, canonical JSON, chain hashing
     src/store.ts      append-only segments, fsync, crash recovery, read-only mode
+    src/lock.ts       exclusive writer lock on a log directory
     src/index-db.ts   SQLite index (a cache; the JSONL is the truth)
     src/payloads.ts   sodium crypto_box_seal payload blobs
     src/merkle.ts     RFC 6962 Merkle tree

@@ -37,7 +37,7 @@ describe('demo session', () => {
 
   it('produces a genuinely valid chain, not fabricated JSONL', () => {
     generateDemoSession(dir);
-    expect(EventStore.open(dir).store.verifyChainOnly()).toEqual([]);
+    expect(EventStore.open(dir, { readOnly: true }).store.verifyChainOnly()).toEqual([]);
   });
 
   it('leaves the index populated so the UI has data immediately', () => {
@@ -58,15 +58,15 @@ describe('demo session', () => {
       const b = generateDemoSession(other, { seed: 1, startedAt });
       // Same seed: identical targets and timings (event_id/ts aside, which are
       // driven by the seeded clock, so hashes match too).
-      const ta = EventStore.open(dir).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
-      const tb = EventStore.open(other).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
+      const ta = EventStore.open(dir, { readOnly: true }).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
+      const tb = EventStore.open(other, { readOnly: true }).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
       expect(ta).toEqual(tb);
       expect(a.events).toBe(b.events);
 
       const third = mkdtempSync(join(tmpdir(), 'orisan-demo-'));
       try {
         generateDemoSession(third, { seed: 2, startedAt });
-        const tc = EventStore.open(third).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
+        const tc = EventStore.open(third, { readOnly: true }).store.readAll().map((e) => `${e.kind}:${e.target}:${e.ts}`);
         expect(tc).not.toEqual(ta);
       } finally { rmSync(third, { recursive: true, force: true }); }
     } finally { rmSync(other, { recursive: true, force: true }); }
@@ -74,7 +74,7 @@ describe('demo session', () => {
 
   it('contains no real-looking credentials or addresses', () => {
     generateDemoSession(dir);
-    const raw = EventStore.open(dir).store.readAll().map((e) => JSON.stringify(e)).join('\n');
+    const raw = EventStore.open(dir, { readOnly: true }).store.readAll().map((e) => JSON.stringify(e)).join('\n');
     expect(raw).not.toMatch(/@(gmail|outlook|yahoo)\.com/);
     expect(raw).not.toMatch(/\bsk-[A-Za-z0-9]{16,}/);
     expect(raw).toMatch(/example\.invalid/);

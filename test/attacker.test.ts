@@ -63,7 +63,7 @@ async function recordSession(n: number, interval = 10): Promise<void> {
 
 /** Rewrite the log: drop `drop` events, re-seal from genesis with our own hasher. */
 function recomputeAttack(drop: (e: RecordedEvent) => boolean): void {
-  const all = EventStore.open(dir).store.readAll().filter((e) => !drop(e));
+  const all = EventStore.open(dir, { readOnly: true }).store.readAll().filter((e) => !drop(e));
   let prev = GENESIS_PREV_HASH;
   const forged = all.map((e, i) => {
     const base = { ...e, seq: i, prev_hash: prev };
@@ -92,7 +92,7 @@ describe('ACCEPTANCE: the recompute attack', () => {
     recomputeAttack((e) => e.seq === 7 || e.seq === 8 || e.seq === 9);
 
     // Chain-only verification is fooled — exactly as it was for the competitors.
-    expect(EventStore.open(dir).store.verifyChainOnly()).toEqual([]);
+    expect(EventStore.open(dir, { readOnly: true }).store.verifyChainOnly()).toEqual([]);
 
     // verify() is not.
     const r = verify(dir, { skipOpenssl: true });
@@ -109,7 +109,7 @@ describe('ACCEPTANCE: the recompute attack', () => {
 
   it('catches a single silently edited event that was re-sealed', async () => {
     await recordSession(20, 10);
-    const all = EventStore.open(dir).store.readAll();
+    const all = EventStore.open(dir, { readOnly: true }).store.readAll();
     // Change one payload field and re-seal the whole chain.
     all[4] = { ...all[4]!, outcome: 'ok (actually failed)' };
     let prev = GENESIS_PREV_HASH;
@@ -177,7 +177,7 @@ describe('ACCEPTANCE: cannot-verify is never success', () => {
     await rec.end();
 
     // Recording was unaffected.
-    expect(EventStore.open(dir).store.count).toBe(12);
+    expect(EventStore.open(dir, { readOnly: true }).store.count).toBe(12);
     // Checkpoints exist but nothing is anchored.
     const r = verify(dir, { skipOpenssl: true });
     expect(r.verdict).toBe('cannot_verify');

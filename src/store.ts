@@ -14,6 +14,7 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -26,6 +27,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
+import { acquireWriterLock, type AcquireOptions, type WriterLock } from './lock.js';
 import {
   GENESIS_PREV_HASH,
   buildEvent,
@@ -62,6 +64,11 @@ export interface StoreOptions {
    * Turning it off trades the durability contract above for speed.
    */
   fsync?: boolean;
+  /**
+   * Identity written into the writer lock. Tests override it to stand in for a
+   * second machine or a dead process; nothing else should.
+   */
+  lockIdentity?: AcquireOptions;
 }
 
 export interface RecoveryReport {
@@ -142,6 +149,17 @@ export class EventStore {
   private eventsInCurrentSegment = 0;
   private nextSeq = 0;
   private lastHash: string = GENESIS_PREV_HASH;
+  private lock: WriterLock | null = null;
+  /**
+   * Bytes this store has seen in the open segment.
+   *
+   * Checked against the real file size before every append. The lock should
+   * make a second writer impossible, but `nextSeq` and `lastHash` live in
+   * memory and a stale one silently forks the chain — so the cheap O(1) check
+   * that nobody has appended behind our back runs anyway. Belt and braces on
+   * the one failure that cannot be repaired after the fact.
+   */
+  private expectedSegmentBytes = 0;
 
   private constructor(dir: string, opts: Required<StoreOptions>) {
     this.dir = dir;
@@ -161,6 +179,7 @@ export class EventStore {
       fsync: opts.fsync ?? true,
       readOnly: opts.readOnly ?? false,
       sessionId: opts.sessionId ?? randomUUID(),
+      lockIdentity: opts.lockIdentity ?? {},
     };
     if (resolved.maxEventsPerSegment < 1) throw new Error('maxEventsPerSegment must be >= 1');
 
@@ -170,6 +189,22 @@ export class EventStore {
       mkdirSync(dir, { recursive: true });
     }
     const store = new EventStore(dir, resolved);
+
+    // Writers take the lock BEFORE recovery, because recovery truncates a torn
+    // tail: doing that while another process is mid-append is the corruption
+    // this prevents, not a repair. Readers never lock and are never blocked by
+    // one — verify must be able to inspect a log that is being written.
+    if (!resolved.readOnly) {
+      store.lock = acquireWriterLock(dir, resolved.lockIdentity);
+      try {
+        const recovery = store.recover();
+        return { store, recovery };
+      } catch (e) {
+        store.lock.release();
+        store.lock = null;
+        throw e;
+      }
+    }
     const recovery = store.recover();
     return { store, recovery };
   }
@@ -181,6 +216,7 @@ export class EventStore {
     if (segments.length === 0) {
       this.currentSegment = 0;
       this.eventsInCurrentSegment = 0;
+      this.expectedSegmentBytes = 0;
       this.nextSeq = 0;
       this.lastHash = GENESIS_PREV_HASH;
       return report;
@@ -226,6 +262,9 @@ export class EventStore {
       if (isLastSegment) {
         this.currentSegment = segmentIndex(name);
         this.eventsInCurrentSegment = inThisSegment;
+        // After any torn-tail truncation above, so it describes the file as it
+        // now is on disk rather than as it was found.
+        this.expectedSegmentBytes = statSync(path).size;
       }
     }
 
@@ -243,9 +282,15 @@ export class EventStore {
       }
       this.currentSegment++;
       this.eventsInCurrentSegment = 0;
+      this.expectedSegmentBytes = 0;
     }
     if (this.fd === null) {
-      this.fd = openSync(join(this.dir, segmentName(this.currentSegment)), 'a');
+      const path = join(this.dir, segmentName(this.currentSegment));
+      this.fd = openSync(path, 'a');
+      // Rolling into a segment that already has bytes means a previous writer
+      // got there first. Adopt the real size so the guard below compares
+      // against the file rather than against an assumption.
+      if (this.eventsInCurrentSegment === 0) this.expectedSegmentBytes = fstatSync(this.fd).size;
     }
     return this.fd;
   }
@@ -255,6 +300,20 @@ export class EventStore {
     if (this.readOnly) throw new Error('store was opened read-only');
     const event = buildEvent(input, this.nextSeq, this.lastHash, this.sessionId);
     const fd = this.ensureOpenSegment();
+
+    // Nobody may have appended since we last looked. If the segment grew
+    // behind our back, this store's nextSeq and lastHash describe a chain that
+    // no longer exists, and writing would fork it — so refuse instead. O(1),
+    // and it is the check that turns a corrupted log into an error message.
+    const onDisk = fstatSync(fd).size;
+    if (onDisk !== this.expectedSegmentBytes) {
+      throw new Error(
+        `${segmentName(this.currentSegment)} changed underneath this recorder `
+        + `(expected ${this.expectedSegmentBytes} bytes, found ${onDisk}). `
+        + 'Another process is writing to this log directory; refusing to append and fork the chain.',
+      );
+    }
+
     const line = Buffer.from(`${JSON.stringify(event)}\n`, 'utf8');
 
     // Single write so a crash can only ever tear the tail, never interleave.
@@ -267,6 +326,7 @@ export class EventStore {
     this.nextSeq = event.seq + 1;
     this.lastHash = event.hash;
     this.eventsInCurrentSegment++;
+    this.expectedSegmentBytes += line.length;
     return event;
   }
 
@@ -312,5 +372,12 @@ export class EventStore {
       closeSync(this.fd);
       this.fd = null;
     }
+    // Last, and unconditionally: a store that failed to close its fd must
+    // still let the next recorder in.
+    this.lock?.release();
+    this.lock = null;
   }
+
+  /** The writer lock this store holds, or null for a read-only store. */
+  get lockInfo(): WriterLock['info'] | null { return this.lock?.info ?? null; }
 }
