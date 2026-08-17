@@ -247,32 +247,42 @@ export interface ChainBreak {
  * the damage. Note again what this cannot do — a chain recomputed end to end
  * passes here. R1.4 catches that by comparing against an anchored checkpoint.
  */
-export function verifyChain(
-  events: readonly RecordedEvent[],
-  startPrevHash: string = GENESIS_PREV_HASH,
-  expectedFirstSeq = 0,
-): ChainBreak[] {
-  const breaks: ChainBreak[] = [];
-  let prev = startPrevHash;
-  let expectedSeq = expectedFirstSeq;
+/**
+ * The chain walk, one event at a time.
+ *
+ * Extracted from `verifyChain` so verify can walk a log of any size without
+ * materialising it (issue #2). `verifyChain` is now a thin wrapper over this,
+ * so there is one implementation of the rules and no second copy to drift.
+ */
+export class ChainWalker {
+  private prev: string;
+  private expectedSeq: number;
 
-  for (const e of events) {
-    if (e.seq !== expectedSeq) {
+  constructor(startPrevHash: string = GENESIS_PREV_HASH, expectedFirstSeq = 0) {
+    this.prev = startPrevHash;
+    this.expectedSeq = expectedFirstSeq;
+  }
+
+  /** Breaks found at this event. Usually empty. */
+  push(e: RecordedEvent): ChainBreak[] {
+    const breaks: ChainBreak[] = [];
+
+    if (e.seq !== this.expectedSeq) {
       breaks.push({
         seq: e.seq,
         event_id: e.event_id,
         reason: 'seq_gap',
-        expected: String(expectedSeq),
+        expected: String(this.expectedSeq),
         actual: String(e.seq),
       });
-      expectedSeq = e.seq;
+      this.expectedSeq = e.seq;
     }
-    if (e.prev_hash !== prev) {
+    if (e.prev_hash !== this.prev) {
       breaks.push({
         seq: e.seq,
         event_id: e.event_id,
         reason: 'prev_hash_mismatch',
-        expected: prev,
+        expected: this.prev,
         actual: e.prev_hash,
       });
     }
@@ -289,8 +299,19 @@ export function verifyChain(
     // Continue from the STORED hash so one edited record does not cascade into
     // a false report against every record after it. The break is named once,
     // at the seq where it happened.
-    prev = e.hash;
-    expectedSeq = e.seq + 1;
+    this.prev = e.hash;
+    this.expectedSeq = e.seq + 1;
+    return breaks;
   }
+}
+
+export function verifyChain(
+  events: readonly RecordedEvent[],
+  startPrevHash: string = GENESIS_PREV_HASH,
+  expectedFirstSeq = 0,
+): ChainBreak[] {
+  const walker = new ChainWalker(startPrevHash, expectedFirstSeq);
+  const breaks: ChainBreak[] = [];
+  for (const e of events) breaks.push(...walker.push(e));
   return breaks;
 }

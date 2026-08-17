@@ -237,7 +237,7 @@ the list of what was wrong is more useful than a claim that nothing is.
     src/lock.ts       exclusive writer lock on a log directory
     src/index-db.ts   SQLite index (a cache; the JSONL is the truth)
     src/payloads.ts   sodium crypto_box_seal payload blobs
-    src/merkle.ts     RFC 6962 Merkle tree
+    src/merkle.ts     RFC 6962 Merkle tree, batch and streaming
     src/checkpoint.ts Ed25519-signed, chained checkpoints
     src/der.ts        minimal DER for RFC 3161
     src/tsa.ts        timestamp anchoring, offline queue, attested time

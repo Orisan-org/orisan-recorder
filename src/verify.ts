@@ -38,18 +38,129 @@ import { merkleRoot } from './merkle.js';
 import { EventStore } from './store.js';
 import { anchorPaths, readAnchor, readAttestedTime } from './tsa.js';
 import { highestWitnessedIndex, readWitness, verifyAgainstWitness } from './witness.js';
-import { computeEventHash, type RecordedEvent } from './schema.js';
+import { ChainWalker, computeEventHash, type ChainBreak, type RecordedEvent } from './schema.js';
+import { MerkleAccumulator } from './merkle.js';
 
-/** Newest event timestamp inside a checkpoint's range, or null if none present. */
-function newestEventTimeIn(events: readonly RecordedEvent[], cp: SignedCheckpoint): Date | null {
-  let newest: number | null = null;
-  for (const e of events) {
-    if (e.seq < cp.seq_from || e.seq > cp.seq_to) continue;
-    const t = Date.parse(e.ts);
-    if (Number.isNaN(t)) continue;
-    if (newest === null || t > newest) newest = t;
+/**
+ * At most this many chain breaks are reported individually.
+ *
+ * A thoroughly mangled log can break at every event, and one finding each
+ * would put the whole log back in memory through the side door — the exact
+ * thing issue #2 is about. The count is still reported in full; it is the
+ * per-event detail that stops.
+ */
+export const MAX_REPORTED_CHAIN_BREAKS = 50;
+
+/** What one streaming pass over the events yields, per checkpoint range. */
+interface RangeSummary {
+  /** Events actually present inside the range. */
+  present: number;
+  /** RFC 6962 root over those events, recomputed from content. */
+  root: string;
+  /** Newest event timestamp inside the range, for the anchor freshness check. */
+  newestTs: Date | null;
+}
+
+interface EventScan {
+  total: number;
+  headSeq: number;
+  chainBreaks: ChainBreak[];
+  chainBreakTotal: number;
+  /** Keyed by checkpoint seq_to. */
+  ranges: Map<number, RangeSummary>;
+  /** Events with seq strictly greater than the highest anchored seq_to. */
+  pastLastAnchor: number;
+}
+
+/**
+ * Walk the log once, computing everything the checks need.
+ *
+ * Verify used to call `store.readAll()` and hold the log in memory: 691 MB of
+ * peak RSS at 300k events, growing linearly, so a long-running install
+ * eventually reached the size where its own verifier would not run. Nothing
+ * here needs random access — the chain walk is sequential, and each
+ * checkpoint's Merkle root only needs the events in its own range, in order.
+ *
+ * Only ONE Merkle accumulator is live at a time. Checkpoint ranges are sorted
+ * and disjoint, so a range is finalised to a 64-character root the moment the
+ * events pass its seq_to, and the accumulator is dropped. Combined with
+ * MerkleAccumulator's O(log n) stack, memory does not grow with the log.
+ */
+function scanEvents(
+  store: EventStore,
+  checkpoints: readonly SignedCheckpoint[],
+  lastAnchoredSeq: number,
+): EventScan {
+  const walker = new ChainWalker();
+  const chainBreaks: ChainBreak[] = [];
+  const ranges = new Map<number, RangeSummary>();
+
+  // Sorted by seq_from so a single pointer keeps pace with the events. The
+  // checkpoint chain check reports discontinuity separately; this only needs
+  // them in order to know which range an event belongs to.
+  const ordered = [...checkpoints].sort((a, b) => a.seq_from - b.seq_from);
+  let cpIdx = 0;
+  let open: { cp: SignedCheckpoint; merkle: MerkleAccumulator; newest: number | null } | null = null;
+
+  const closeOpen = (): void => {
+    if (!open) return;
+    ranges.set(open.cp.seq_to, {
+      present: open.merkle.count,
+      root: open.merkle.root(),
+      newestTs: open.newest === null ? null : new Date(open.newest),
+    });
+    open = null;
+  };
+
+  let total = 0;
+  let headSeq = -1;
+  let chainBreakTotal = 0;
+  let pastLastAnchor = 0;
+
+  for (const e of store.read()) {
+    total++;
+    headSeq = e.seq;
+    if (e.seq > lastAnchoredSeq) pastLastAnchor++;
+
+    for (const b of walker.push(e)) {
+      chainBreakTotal++;
+      if (chainBreaks.length < MAX_REPORTED_CHAIN_BREAKS) chainBreaks.push(b);
+    }
+
+    // Finish any range this event has moved past, then open the one it is in.
+    while (open && e.seq > open.cp.seq_to) closeOpen();
+    while (!open && cpIdx < ordered.length && ordered[cpIdx]!.seq_to < e.seq) {
+      // A range with no events left in it at all: record it as empty so the
+      // count check still fires rather than the range silently vanishing.
+      const skipped = ordered[cpIdx]!;
+      if (!ranges.has(skipped.seq_to)) {
+        ranges.set(skipped.seq_to, { present: 0, root: new MerkleAccumulator().root(), newestTs: null });
+      }
+      cpIdx++;
+    }
+    if (!open && cpIdx < ordered.length && e.seq >= ordered[cpIdx]!.seq_from && e.seq <= ordered[cpIdx]!.seq_to) {
+      open = { cp: ordered[cpIdx]!, merkle: new MerkleAccumulator(), newest: null };
+      cpIdx++;
+    }
+
+    if (open && e.seq >= open.cp.seq_from && e.seq <= open.cp.seq_to) {
+      open.merkle.push(computeEventHash(stripHash(e)));
+      const t = Date.parse(e.ts);
+      if (!Number.isNaN(t) && (open.newest === null || t > open.newest)) open.newest = t;
+    }
   }
-  return newest === null ? null : new Date(newest);
+  closeOpen();
+
+  // Checkpoints entirely beyond the end of the log still need a summary, or
+  // the count check would have nothing to compare against and truncation
+  // below an anchor would lose one of its two signals.
+  for (const cp of ordered) {
+    if (!ranges.has(cp.seq_to)) {
+      ranges.set(cp.seq_to, { present: 0, root: new MerkleAccumulator().root(), newestTs: null });
+    }
+  }
+
+  return { total, headSeq, chainBreaks, chainBreakTotal, ranges, pastLastAnchor };
 }
 
 /** An event minus its stored hash, ready for recomputation. */
@@ -163,9 +274,9 @@ export function exitCodeFor(verdict: Verdict): number {
  */
 function checkCheckpointAgainstEvents(
   cp: SignedCheckpoint,
-  events: readonly RecordedEvent[],
+  summary: RangeSummary | undefined,
 ): Finding | null {
-  const inRange = events.filter((e) => e.seq >= cp.seq_from && e.seq <= cp.seq_to);
+  const inRange = { length: summary?.present ?? 0 };
 
   if (inRange.length !== cp.count) {
     return {
@@ -184,7 +295,7 @@ function checkCheckpointAgainstEvents(
   // Merkle check passed unchanged — only the step-1 chain walk objected. The
   // externally anchored layer must confirm content independently or it adds
   // nothing the chain did not already provide.
-  const actual = merkleRoot(inRange.map((e) => computeEventHash(stripHash(e))));
+  const actual = summary?.root ?? '';
   if (actual !== cp.merkle_root) {
     return {
       severity: 'tampered',
@@ -287,8 +398,22 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
         'the final event may be missing',
     });
   }
-  const events = store.readAll();
-  for (const b of store.verifyChainOnly()) {
+  // ---- 2. checkpoint signatures ------------------------------------------
+  const checkpoints = readCheckpoints(dir);
+  const pubPath = join(dir, PUBLIC_KEY_FILENAME);
+  const pubPem = existsSync(pubPath) ? readFileSync(pubPath, 'utf8') : null;
+
+  // Which checkpoints are anchored depends only on the anchor files, so it is
+  // known before a single event is read — which is what lets the whole log be
+  // walked exactly once, below.
+  const anchoredCheckpoints = checkpoints.filter((cp) => readAnchor(dir, cp.seq_to) !== null);
+  const lastAnchoredSeq = anchoredCheckpoints.length
+    ? Math.max(...anchoredCheckpoints.map((c) => c.seq_to))
+    : -1;
+
+  // ---- 1b. one pass over the events --------------------------------------
+  const scan = scanEvents(store, checkpoints, lastAnchoredSeq);
+  for (const b of scan.chainBreaks) {
     findings.push({
       severity: 'tampered',
       code: `chain_${b.reason}`,
@@ -296,11 +421,15 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
       message: `chain break at seq ${b.seq}: ${b.reason} (expected ${b.expected}, got ${b.actual})`,
     });
   }
-
-  // ---- 2. checkpoint signatures ------------------------------------------
-  const checkpoints = readCheckpoints(dir);
-  const pubPath = join(dir, PUBLIC_KEY_FILENAME);
-  const pubPem = existsSync(pubPath) ? readFileSync(pubPath, 'utf8') : null;
+  if (scan.chainBreakTotal > scan.chainBreaks.length) {
+    findings.push({
+      severity: 'tampered',
+      code: 'chain_breaks_truncated',
+      message:
+        `${scan.chainBreakTotal} chain breaks in total; only the first ${scan.chainBreaks.length} are ` +
+        'listed above. A log this damaged should be treated as lost, not repaired',
+    });
+  }
 
   // 2a. The checkpoint log must itself be an unbroken chain covering the events
   //     from seq 0. Validating only what is present was the single root cause
@@ -445,7 +574,7 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
       }
       attestedTimes.set(cp.seq_to, attested);
 
-      const newestEventTs = newestEventTimeIn(events, cp);
+      const newestEventTs = scan.ranges.get(cp.seq_to)?.newestTs ?? null;
       if (newestEventTs !== null) {
         const skewMs = attested.getTime() - newestEventTs.getTime();
         if (skewMs > ANCHOR_FRESHNESS_MS) {
@@ -494,9 +623,8 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   // ---- 4. the recompute attack -------------------------------------------
   // Only meaningful against checkpoints that are actually anchored: an
   // unanchored checkpoint can simply be re-signed alongside the rewrite.
-  const anchoredCheckpoints = checkpoints.filter((cp) => readAnchor(dir, cp.seq_to) !== null);
   for (const cp of anchoredCheckpoints) {
-    const f = checkCheckpointAgainstEvents(cp, events);
+    const f = checkCheckpointAgainstEvents(cp, scan.ranges.get(cp.seq_to));
     if (f) findings.push(f);
   }
 
@@ -506,13 +634,10 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   // seq" was derived from whatever checkpoints survived — so deleting the
   // newest checkpoint together with the events it covered moved the goalposts
   // and the truncation became invisible. Both halves are now failures.
-  const lastAnchoredSeq = anchoredCheckpoints.length
-    ? Math.max(...anchoredCheckpoints.map((c) => c.seq_to))
-    : -1;
-  const headSeq = events.length > 0 ? events[events.length - 1]!.seq : -1;
+  const headSeq = scan.headSeq;
 
   if (headSeq > lastAnchoredSeq) {
-    const uncommitted = events.filter((e) => e.seq > lastAnchoredSeq).length;
+    const uncommitted = scan.pastLastAnchor;
     // cannot_verify, not tampered: events accumulate past the last checkpoint
     // during normal recording, before the cadence fires. Calling that
     // tampering would flag every live log and every `demo` run. It is still
@@ -600,7 +725,7 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
       });
     } else {
       const localMax = checkpoints.length ? Math.max(...checkpoints.map((c) => c.index)) : -1;
-      const localHeadSeq = events.length > 0 ? events[events.length - 1]!.seq : -1;
+      const localHeadSeq = scan.headSeq;
 
       if (ws.head.latest_index > localMax) {
         // THE A1 KILL. The witness remembers checkpoints this log no longer has.
@@ -710,7 +835,7 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   return {
     verdict,
     exitCode: exitCodeFor(verdict),
-    events: events.length,
+    events: scan.total,
     checkpoints: checkpoints.length,
     anchored,
     findings,

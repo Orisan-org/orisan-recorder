@@ -57,3 +57,58 @@ function mth(leaves: readonly Buffer[]): Buffer {
 export function merkleRoot(eventHashesHex: readonly string[]): string {
   return mth(eventHashesHex.map(leafHash)).toString('hex');
 }
+
+/**
+ * The same RFC 6962 root, computed one leaf at a time.
+ *
+ * `merkleRoot` needs every leaf in an array, which is fine for a checkpoint
+ * being cut and fatal for verifying a large log — issue #2 measured 691 MB of
+ * peak RSS on a 300k-event log because verify materialised all of it.
+ *
+ * This holds only the roots of completed perfect subtrees: at most one per bit
+ * set in the leaf count, so O(log n) hashes, about 18 of them for a log of a
+ * million events. Memory does not grow with the log.
+ *
+ * WHY IT IS THE SAME TREE. RFC 6962 splits at the largest power of two below
+ * n, so the left subtree is always perfect and the right recurses the same
+ * way. That decomposes any n into perfect subtrees whose sizes are exactly the
+ * set bits of n, most significant first, combined right to left — which is
+ * precisely what this stack produces. Odd nodes are promoted rather than
+ * duplicated here too: a lone subtree is carried up untouched.
+ *
+ * That argument is worth exactly nothing on its own, so
+ * test/merkle.test.ts asserts byte-identical roots against `merkleRoot` for
+ * every leaf count from 0 to 300 and for sizes around each power of two.
+ */
+export class MerkleAccumulator {
+  /** Completed perfect subtrees, sizes strictly decreasing towards the top. */
+  private readonly stack: { size: number; hash: Buffer }[] = [];
+  private n = 0;
+
+  /** Add one event hash, as lowercase sha256 hex. */
+  push(eventHashHex: string): void {
+    this.n++;
+    let node = { size: 1, hash: leafHash(eventHashHex) };
+    for (;;) {
+      const top = this.stack[this.stack.length - 1];
+      if (!top || top.size !== node.size) break;
+      this.stack.pop();
+      node = { size: top.size * 2, hash: sha256(NODE_PREFIX, top.hash, node.hash) };
+    }
+    this.stack.push(node);
+  }
+
+  get count(): number { return this.n; }
+
+  /** The root so far. Non-destructive: more leaves may be pushed afterwards. */
+  root(): string {
+    if (this.n === 0) return emptyRoot().toString('hex');
+    // Right to left: the rightmost (smallest) subtree is the innermost right
+    // child, exactly as the recursive split builds it.
+    let acc = this.stack[this.stack.length - 1]!.hash;
+    for (let i = this.stack.length - 2; i >= 0; i--) {
+      acc = sha256(NODE_PREFIX, this.stack[i]!.hash, acc);
+    }
+    return acc.toString('hex');
+  }
+}
