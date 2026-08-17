@@ -14,6 +14,7 @@
  * whole thing against a REAL HTTP witness that answers 429 and then succeeds.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,7 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { Recorder } from '../src/recorder.js';
 import { readCheckpoints, generateSigningKey, type SigningKeyFile } from '../src/checkpoint.js';
 import {
-  DEFAULT_RETRY, DRAIN_RETRY, pendingSubmissions, receiptPath, registerLog,
+  DEFAULT_RETRY, DRAIN_RETRY, RETRYABLE_STATUS, pendingSubmissions, receiptPath, registerLog,
   retryDelayMs, submitCheckpoint, readWitnessConfig,
   type FetchLike, type WitnessConfig,
 } from '../src/witness-service.js';
@@ -83,15 +84,15 @@ describe('a throttled submission, against a scripted witness', () => {
   let key: SigningKeyFile;
   beforeEach(() => { key = generateSigningKey(dir); });
 
-  /** Answers 429 `times` times, then whatever `then` says. */
-  function scripted(times: number, retryAfter?: string): { f: FetchLike; calls: () => number } {
+  /** Answers `status` for `times` requests, then a hard 500. */
+  function scripted(times: number, retryAfter?: string, status = 429): { f: FetchLike; calls: () => number } {
     let n = 0;
     const f: FetchLike = async () => {
       n++;
       if (n <= times) {
         return {
-          ok: false, status: 429,
-          text: async () => 'rate limit exceeded for this log_id',
+          ok: false, status,
+          text: async () => 'busy',
           json: async () => ({}),
           headers: { get: (h: string) => (h.toLowerCase() === 'retry-after' ? retryAfter ?? null : null) },
         };
@@ -107,7 +108,7 @@ describe('a throttled submission, against a scripted witness', () => {
     expect(calls()).toBe(2);
     // Second call returned 500, so this is a genuine refusal — and it says so.
     expect(r.error).toContain('witness refused (500)');
-    expect(r.throttled).toBeUndefined();
+    expect(r.transient).toBeUndefined();
   });
 
   it('gives up within the budget and calls it throttled, never refused', async () => {
@@ -115,7 +116,7 @@ describe('a throttled submission, against a scripted witness', () => {
     const r = await submitCheckpoint(dir, cfg, key, cp, f, { sleep: async () => {} });
     expect(calls()).toBe(DEFAULT_RETRY.maxAttempts);
     expect(r.ok).toBe(false);
-    expect(r.throttled).toBe(true);
+    expect(r.transient).toBe(true);
     expect(r.status).toBe(429);
     expect(r.error).toContain('throttled');
     expect(r.error).not.toContain('refused');
@@ -140,12 +141,53 @@ describe('a throttled submission, against a scripted witness', () => {
     // 5s fits once; a second 5s would blow the 6s budget.
     expect(slept).toEqual([5000]);
     expect(calls()).toBe(2);
-    expect(r.throttled).toBe(true);
+    expect(r.transient).toBe(true);
   });
 
   it('the recorder budget is small, so recording is never blocked for long', () => {
     expect(DEFAULT_RETRY.maxTotalMs).toBeLessThanOrEqual(5_000);
     expect(DRAIN_RETRY.maxTotalMs).toBeGreaterThan(DEFAULT_RETRY.maxTotalMs);
+  });
+
+  it('retries every status in the retry class, and no others', async () => {
+    for (const status of [429, 502, 503, 504]) {
+      const { f, calls } = scripted(99, undefined, status);
+      const r = await submitCheckpoint(dir, cfg, key, cp, f, { sleep: async () => {} });
+      expect(calls(), `status ${status} should be retried`).toBe(DEFAULT_RETRY.maxAttempts);
+      expect(r.transient, `status ${status}`).toBe(true);
+      expect(r.status).toBe(status);
+    }
+    // 500 is not in the class: a witness that genuinely broke on this content
+    // will break the same way on the retry.
+    for (const status of [400, 401, 404, 409, 500, 501]) {
+      const { f, calls } = scripted(99, undefined, status);
+      const r = await submitCheckpoint(dir, cfg, key, cp, f, { sleep: async () => {} });
+      expect(calls(), `status ${status} should NOT be retried`).toBe(1);
+      expect(r.transient, `status ${status}`).toBeUndefined();
+    }
+    expect([...RETRYABLE_STATUS].sort()).toEqual([429, 502, 503, 504]);
+  });
+
+  it('says unavailable for a 5xx and throttled for a 429, not one word for both', async () => {
+    const throttled = await submitCheckpoint(dir, cfg, key, cp, scripted(99, '1', 429).f, { sleep: async () => {} });
+    expect(throttled.error).toContain('throttled');
+    expect(throttled.error).toContain('asking for 1s');
+
+    const down = await submitCheckpoint(dir, cfg, key, cp, scripted(99, undefined, 503).f, { sleep: async () => {} });
+    expect(down.error).toContain('temporarily unavailable (503)');
+    expect(down.error).not.toContain('throttled');
+    for (const r of [throttled, down]) {
+      expect(r.error).not.toContain('refused');
+      expect(r.error).toContain('stays queued');
+    }
+  });
+
+  it('honours Retry-After on a 503 as well as a 429', async () => {
+    const slept: number[] = [];
+    await submitCheckpoint(dir, cfg, key, cp, scripted(99, '2', 503).f, {
+      sleep: async (ms) => { slept.push(ms); }, maxAttempts: 3, maxTotalMs: 60_000,
+    });
+    expect(slept).toEqual([2000, 2000]);
   });
 
   it('does not retry a 409 fork, which is a real refusal', async () => {
@@ -157,7 +199,7 @@ describe('a throttled submission, against a scripted witness', () => {
     const r = await submitCheckpoint(dir, cfg, key, cp, f, { sleep: async () => {} });
     expect(n).toBe(1);
     expect(r.conflict).toBe(true);
-    expect(r.throttled).toBeUndefined();
+    expect(r.transient).toBeUndefined();
   });
 
   it('does not retry an unreachable witness into a long stall', async () => {
@@ -169,28 +211,31 @@ describe('a throttled submission, against a scripted witness', () => {
   });
 });
 
-describe('429 then success, against a real witness over HTTP', () => {
+describe('a retryable status then success, against a real witness over HTTP', () => {
   let witness: LiveWitness;
   let proxy: Server;
   let proxyUrl: string;
-  let throttleNext = 0;
-  let seen429 = 0;
+  let deferNext = 0;
+  let deferStatus = 429;
+  let seenDeferrals = 0;
 
   beforeEach(async () => {
     witness = await startWitness();
-    throttleNext = 0;
-    seen429 = 0;
-    // A real socket in front of the real witness that answers 429 for the
-    // first N writes, the way the witness's own limiter would.
+    deferNext = 0;
+    deferStatus = 429;
+    seenDeferrals = 0;
+    // A real socket in front of the real witness that defers the first N
+    // writes — 429 the way the witness's own limiter would, or 503 the way it
+    // looks while the machine is restarting mid-deploy.
     proxy = createServer((req, res) => {
       void (async () => {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
-        if (req.method === 'POST' && throttleNext > 0) {
-          throttleNext--;
-          seen429++;
-          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
-          res.end(JSON.stringify({ error: 'rate limit exceeded for this log_id' }));
+        if (req.method === 'POST' && deferNext > 0) {
+          deferNext--;
+          seenDeferrals++;
+          res.writeHead(deferStatus, { 'content-type': 'application/json', 'retry-after': '1' });
+          res.end(JSON.stringify({ error: deferStatus === 429 ? 'rate limit exceeded for this log_id' : 'restarting' }));
           return;
         }
         const upstream = await fetch(`${witness.url}${req.url}`, {
@@ -212,7 +257,8 @@ describe('429 then success, against a real witness over HTTP', () => {
     await witness.stop();
   });
 
-  it('is throttled twice, then succeeds, and writes a real receipt', async () => {
+  /** A real recorded log with at least one checkpoint waiting to be witnessed. */
+  async function recordAndRegister(): Promise<{ cfg: WitnessConfig; key: SigningKeyFile }> {
     generateSigningKey(dir);
     const rec = Recorder.open(dir, { checkpointInterval: 5, fsync: false });
     for (let i = 0; i < 5; i++) {
@@ -227,29 +273,88 @@ describe('429 then success, against a real witness over HTTP', () => {
 
     const key = generateSigningKey(dir);
     await registerLog(dir, key, { url: proxyUrl });
-    const cfg = readWitnessConfig(dir)!;
-    const pending = pendingSubmissions(dir, readCheckpoints(dir));
-    expect(pending.length).toBeGreaterThan(0);
+    return { cfg: readWitnessConfig(dir)!, key };
+  }
 
-    throttleNext = 2;
-    const slept: number[] = [];
-    const r = await submitCheckpoint(dir, cfg, key, pending[0]!, undefined, {
-      ...DRAIN_RETRY, sleep: async (ms) => { slept.push(ms); },
+  for (const status of [429, 503] as const) {
+    it(`is deferred twice with ${status}, then succeeds, and writes a real receipt`, async () => {
+      const { cfg, key } = await recordAndRegister();
+      const pending = pendingSubmissions(dir, readCheckpoints(dir));
+      expect(pending.length).toBeGreaterThan(0);
+
+      deferStatus = status;
+      deferNext = 2;
+      const slept: number[] = [];
+      const r = await submitCheckpoint(dir, cfg, key, pending[0]!, undefined, {
+        ...DRAIN_RETRY, sleep: async (ms) => { slept.push(ms); },
+      });
+
+      expect(seenDeferrals).toBe(2);
+      expect(slept).toEqual([1000, 1000]);   // Retry-After: 1, twice
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(r.attempts).toBe(3);
+      expect(r.transient).toBeUndefined();
+
+      // A real, signed receipt on disk — the submission genuinely went through.
+      const receipt = JSON.parse(readFileSync(receiptPath(dir, pending[0]!.index), 'utf8')) as {
+        index: number; witness_signature: string;
+      };
+      expect(receipt.index).toBe(pending[0]!.index);
+      expect(receipt.witness_signature.length).toBeGreaterThan(40);
+      expect(pendingSubmissions(dir, readCheckpoints(dir)).map((c) => c.index))
+        .not.toContain(pending[0]!.index);
+    }, 60_000);
+  }
+
+  it('`witness submit` exits 0 after a 503, not 2', async () => {
+    // Through the real CLI with real sleeps, because the exit code is the
+    // thing a script or a CI job actually sees.
+    await recordAndRegister();
+    deferStatus = 503;
+    deferNext = 2;
+
+    const r = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+      const p = spawn(
+        join(process.cwd(), 'node_modules', '.bin', 'tsx'),
+        [join(process.cwd(), 'src', 'cli.ts'), 'witness', 'submit', dir],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stdout = ''; let stderr = '';
+      p.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      p.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      p.on('exit', (code) => resolve({ code: code ?? -1, stdout, stderr }));
     });
 
-    expect(seen429).toBe(2);
-    expect(slept).toEqual([1000, 1000]);   // Retry-After: 1, twice
-    expect(r.ok, JSON.stringify(r)).toBe(true);
-    expect(r.attempts).toBe(3);
-    expect(r.throttled).toBeUndefined();
+    expect(seenDeferrals).toBe(2);
+    expect(r.code, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`).toBe(0);
+    expect(r.code).not.toBe(2);
+    expect(r.stdout).toContain('witnessed');
+    expect(pendingSubmissions(dir, readCheckpoints(dir))).toEqual([]);
+  }, 60_000);
 
-    // A real, signed receipt on disk — the submission genuinely went through.
-    const receipt = JSON.parse(readFileSync(receiptPath(dir, pending[0]!.index), 'utf8')) as {
-      index: number; witness_signature: string;
-    };
-    expect(receipt.index).toBe(pending[0]!.index);
-    expect(receipt.witness_signature.length).toBeGreaterThan(40);
-    expect(pendingSubmissions(dir, readCheckpoints(dir)).map((c) => c.index))
-      .not.toContain(pending[0]!.index);
+  it('exits 0 and says deferred when the witness never recovers', async () => {
+    // Nothing is wrong with the log, so this must not be reported as a
+    // cannot-verify. The checkpoints stay queued.
+    await recordAndRegister();
+    deferStatus = 503;
+    deferNext = 999;
+
+    const r = await new Promise<{ code: number; stdout: string }>((resolve) => {
+      const p = spawn(
+        join(process.cwd(), 'node_modules', '.bin', 'tsx'),
+        [join(process.cwd(), 'src', 'cli.ts'), 'witness', 'submit', dir],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stdout = '';
+      p.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      p.stderr.on('data', () => {});
+      p.on('exit', (code) => resolve({ code: code ?? -1, stdout }));
+    });
+
+    expect(r.code, r.stdout).toBe(0);
+    expect(r.stdout).toContain('deferred, still queued');
+    expect(r.stdout).toContain('not refused');
+    // Still pending, which is the honest outcome.
+    expect(pendingSubmissions(dir, readCheckpoints(dir)).length).toBeGreaterThan(0);
   }, 60_000);
 });

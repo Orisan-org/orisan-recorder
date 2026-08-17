@@ -482,17 +482,17 @@ async function main(argv: string[]): Promise<number> {
       if (pending.length === 0) { process.stdout.write('nothing pending: every checkpoint has a receipt\n'); return 0; }
 
       let failed = 0;
-      let throttled = 0;
+      let deferred = 0;
       for (const cp of pending) {
         try {
           // This command exists to drain the queue and is in nobody's hot
           // path, so it waits out throttling far longer than the recorder does.
           const r = await submitCheckpoint(wdir, cfg, key, cp, undefined, DRAIN_RETRY);
           if (r.ok) process.stdout.write(`  index ${r.index}  witnessed\n`);
-          else if (r.throttled) {
-            // Not a failure of this log: the witness asked us to come back.
-            throttled++;
-            process.stdout.write(`  index ${cp.index}  throttled, still queued: ${r.error}\n`);
+          else if (r.transient) {
+            // Not a failure of this log: the witness was busy or briefly away.
+            deferred++;
+            process.stdout.write(`  index ${cp.index}  deferred, still queued: ${r.error}\n`);
           } else { failed++; process.stderr.write(`  index ${cp.index}  NOT witnessed: ${r.error}\n`); }
         } catch (e) {
           if (e instanceof WitnessKeyMismatch) {
@@ -502,12 +502,13 @@ async function main(argv: string[]): Promise<number> {
           throw e;
         }
       }
-      if (throttled > 0) {
+      if (deferred > 0) {
         process.stdout.write(
-          `\n${throttled} checkpoint(s) were throttled, not refused. They stay queued; run this again shortly.\n`,
+          `\n${deferred} checkpoint(s) were deferred, not refused: the witness was busy or briefly `
+          + 'unavailable. They stay queued; run this again shortly.\n',
         );
       }
-      // Throttling alone is not a cannot-verify: nothing was lost and nothing
+      // A deferral alone is not a cannot-verify: nothing was lost and nothing
       // is wrong with the log. Only a real refusal earns exit 2.
       return failed > 0 ? 2 : 0;
     }

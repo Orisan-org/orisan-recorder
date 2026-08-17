@@ -178,11 +178,15 @@ export interface SubmitOutcome {
   /** True when the refusal was a fork (409 with differing content). */
   conflict?: boolean;
   /**
-   * Issue #11 — the witness asked us to slow down; it did not reject anything.
-   * Nothing is lost: unwitnessed checkpoints are re-derived from disk as an
-   * offline queue and go out on the next run.
+   * Issue #11 — the witness did not reject anything, it was busy or briefly
+   * unavailable. Nothing is lost: unwitnessed checkpoints are re-derived from
+   * disk as an offline queue and go out on the next run.
+   *
+   * Named `transient` rather than `throttled` because the retry class now
+   * covers 502/503/504 as well as 429, and calling a bad gateway "throttled"
+   * would be a lie in the one place an operator is reading for the truth.
    */
-  throttled?: boolean;
+  transient?: boolean;
   /** How many requests were sent, including retries. */
   attempts?: number;
 }
@@ -206,6 +210,20 @@ export interface RetryBudget {
 
 export const DEFAULT_RETRY: Required<Omit<RetryBudget, 'sleep'>> = { maxAttempts: 3, maxTotalMs: 5_000 };
 export const DRAIN_RETRY: Required<Omit<RetryBudget, 'sleep'>> = { maxAttempts: 5, maxTotalMs: 30_000 };
+
+/**
+ * Statuses worth retrying, and why each is not a refusal.
+ *
+ *   429  the witness is rate-limiting this log; the submission was never read
+ *   502  something in front of the witness could not reach it
+ *   503  the witness is restarting or shedding load — a deploy looks like this
+ *   504  the witness took too long, but may well have been fine
+ *
+ * None of these is an opinion about the checkpoint. Everything else is: a 409
+ * is a fork, a 401 is a bad signature, a 400 is a malformed submission, and
+ * retrying any of them just re-reports the same answer more slowly.
+ */
+export const RETRYABLE_STATUS: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
 /** Base backoff before jitter: 400ms, 800ms, 1600ms … capped. */
 const BACKOFF_BASE_MS = 400;
@@ -281,19 +299,23 @@ export async function submitCheckpoint(
       return { ok: false, index: cp.index, attempts, error: `witness unreachable: ${(e as Error).message}` };
     }
 
-    if (res.status !== 429) break;
+    if (!RETRYABLE_STATUS.has(res.status)) break;
+    const status = res.status;
 
     // Drain the body so the connection can be reused, and keep the header.
+    // 503 carries Retry-After as legitimately as 429 does.
     await res.text().catch(() => '');
     lastRetryAfter = res.headers?.get('retry-after') ?? null;
 
     const wait = retryDelayMs(attempts - 1, lastRetryAfter);
     if (attempts >= maxAttempts || spentMs + wait > maxTotalMs) {
+      const what = status === 429
+        ? `witness throttled this log (429)${lastRetryAfter ? `, asking for ${lastRetryAfter}s` : ''}`
+        : `witness temporarily unavailable (${status})`;
       return {
-        ok: false, index: cp.index, status: 429, attempts, throttled: true,
-        error: `witness throttled this log (429) after ${attempts} attempt(s)`
-          + `${lastRetryAfter ? `, asking for ${lastRetryAfter}s` : ''}`
-          + '; the checkpoint stays queued and goes out on the next run',
+        ok: false, index: cp.index, status, attempts, transient: true,
+        error: `${what} after ${attempts} attempt(s); `
+          + 'the checkpoint stays queued and goes out on the next run',
       };
     }
     await sleep(wait);
