@@ -25,7 +25,7 @@ import { defaultHome, prepareStart, setupSteps, startBanner } from './quickstart
 import { runShowcase } from './showcase.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
-  fetchHead, pendingSubmissions, readWitnessConfig, registerLog, repointWitness,
+  DRAIN_RETRY, fetchHead, pendingSubmissions, readWitnessConfig, registerLog, repointWitness,
   submitCheckpoint, WitnessKeyMismatch,
 } from './witness-service.js';
 import { generateSigningKey, loadSigningKey, signingKeyPath } from './checkpoint.js';
@@ -482,11 +482,18 @@ async function main(argv: string[]): Promise<number> {
       if (pending.length === 0) { process.stdout.write('nothing pending: every checkpoint has a receipt\n'); return 0; }
 
       let failed = 0;
+      let throttled = 0;
       for (const cp of pending) {
         try {
-          const r = await submitCheckpoint(wdir, cfg, key, cp);
+          // This command exists to drain the queue and is in nobody's hot
+          // path, so it waits out throttling far longer than the recorder does.
+          const r = await submitCheckpoint(wdir, cfg, key, cp, undefined, DRAIN_RETRY);
           if (r.ok) process.stdout.write(`  index ${r.index}  witnessed\n`);
-          else { failed++; process.stderr.write(`  index ${cp.index}  NOT witnessed: ${r.error}\n`); }
+          else if (r.throttled) {
+            // Not a failure of this log: the witness asked us to come back.
+            throttled++;
+            process.stdout.write(`  index ${cp.index}  throttled, still queued: ${r.error}\n`);
+          } else { failed++; process.stderr.write(`  index ${cp.index}  NOT witnessed: ${r.error}\n`); }
         } catch (e) {
           if (e instanceof WitnessKeyMismatch) {
             process.stderr.write(`\nATTACK: ${e.message}\n`);
@@ -495,6 +502,13 @@ async function main(argv: string[]): Promise<number> {
           throw e;
         }
       }
+      if (throttled > 0) {
+        process.stdout.write(
+          `\n${throttled} checkpoint(s) were throttled, not refused. They stay queued; run this again shortly.\n`,
+        );
+      }
+      // Throttling alone is not a cannot-verify: nothing was lost and nothing
+      // is wrong with the log. Only a real refusal earns exit 2.
       return failed > 0 ? 2 : 0;
     }
 

@@ -56,7 +56,14 @@ export interface WitnessHead {
 export type FetchLike = (
   url: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown>; text: () => Promise<string> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+  text: () => Promise<string>;
+  /** Optional so the many test doubles that predate Retry-After still satisfy this. */
+  headers?: { get: (name: string) => string | null };
+}>;
 
 function http(): FetchLike {
   return globalThis.fetch as unknown as FetchLike;
@@ -170,6 +177,56 @@ export interface SubmitOutcome {
   error?: string;
   /** True when the refusal was a fork (409 with differing content). */
   conflict?: boolean;
+  /**
+   * Issue #11 — the witness asked us to slow down; it did not reject anything.
+   * Nothing is lost: unwitnessed checkpoints are re-derived from disk as an
+   * offline queue and go out on the next run.
+   */
+  throttled?: boolean;
+  /** How many requests were sent, including retries. */
+  attempts?: number;
+}
+
+/**
+ * Retry budget for a throttled submission.
+ *
+ * The defaults are deliberately small, because submitCheckpoint is awaited
+ * while the recorder cuts a checkpoint: blocking an agent's recording for
+ * thirty seconds to be polite to the witness is the wrong trade. Giving up is
+ * safe — the checkpoint stays in the on-disk queue. The `witness submit`
+ * command, which exists to drain that queue and is not in anyone's hot path,
+ * passes a larger budget.
+ */
+export interface RetryBudget {
+  maxAttempts?: number;
+  maxTotalMs?: number;
+  /** Injected by tests so a backoff does not actually sleep. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export const DEFAULT_RETRY: Required<Omit<RetryBudget, 'sleep'>> = { maxAttempts: 3, maxTotalMs: 5_000 };
+export const DRAIN_RETRY: Required<Omit<RetryBudget, 'sleep'>> = { maxAttempts: 5, maxTotalMs: 30_000 };
+
+/** Base backoff before jitter: 400ms, 800ms, 1600ms … capped. */
+const BACKOFF_BASE_MS = 400;
+const BACKOFF_CAP_MS = 8_000;
+
+/**
+ * How long to wait before retrying, honouring Retry-After when the witness
+ * sends one. RFC 9110 allows both a delay in seconds and an HTTP-date.
+ */
+export function retryDelayMs(attempt: number, retryAfter: string | null | undefined, jitter = Math.random()): number {
+  if (retryAfter) {
+    const seconds = Number(retryAfter.trim());
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, BACKOFF_CAP_MS);
+    const when = Date.parse(retryAfter);
+    if (!Number.isNaN(when)) return Math.min(Math.max(0, when - Date.now()), BACKOFF_CAP_MS);
+    // An unparseable Retry-After is the server being odd, not a reason to
+    // hammer it; fall through to the backoff.
+  }
+  const base = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
+  // Jitter so several recorders throttled at once do not retry in lockstep.
+  return Math.round(base * (0.5 + jitter * 0.5));
 }
 
 export function receiptPath(dir: string, index: number): string {
@@ -180,36 +237,73 @@ export function hasReceipt(dir: string, index: number): boolean {
   return existsSync(receiptPath(dir, index));
 }
 
-/** Submit one checkpoint. Never throws for an unreachable witness. */
+/**
+ * Submit one checkpoint. Never throws for an unreachable witness.
+ *
+ * A 429 is a request to slow down, NOT a rejection of the submission, and this
+ * used to report it as `witness refused (429)` — which reads to an operator
+ * like the witness objected to the content. It now backs off and retries, and
+ * if the budget runs out says it was throttled and will go out on the next run.
+ */
 export async function submitCheckpoint(
   dir: string,
   cfg: WitnessConfig,
   signingKey: SigningKeyFile,
   cp: SignedCheckpoint,
   fetchImpl?: FetchLike,
+  retry: RetryBudget = {},
 ): Promise<SubmitOutcome> {
   const f = fetchImpl ?? http();
   const payload = submissionPayload(cfg.log_id, cp);
   const signature = signWithKey(signingKey, canonicalJson(payload));
 
+  const maxAttempts = retry.maxAttempts ?? DEFAULT_RETRY.maxAttempts;
+  const maxTotalMs = retry.maxTotalMs ?? DEFAULT_RETRY.maxTotalMs;
+  const sleep = retry.sleep ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms); }));
+
   let res: Awaited<ReturnType<FetchLike>>;
-  try {
-    res = await f(`${cfg.url}/v1/logs/${cfg.log_id}/checkpoints`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        index: cp.index, seq_from: cp.seq_from, seq_to: cp.seq_to,
-        merkle_root: cp.merkle_root, signature,
-      }),
-    });
-  } catch (e) {
-    return { ok: false, index: cp.index, error: `witness unreachable: ${(e as Error).message}` };
+  let attempts = 0;
+  let spentMs = 0;
+  let lastRetryAfter: string | null = null;
+
+  for (;;) {
+    attempts++;
+    try {
+      res = await f(`${cfg.url}/v1/logs/${cfg.log_id}/checkpoints`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          index: cp.index, seq_from: cp.seq_from, seq_to: cp.seq_to,
+          merkle_root: cp.merkle_root, signature,
+        }),
+      });
+    } catch (e) {
+      return { ok: false, index: cp.index, attempts, error: `witness unreachable: ${(e as Error).message}` };
+    }
+
+    if (res.status !== 429) break;
+
+    // Drain the body so the connection can be reused, and keep the header.
+    await res.text().catch(() => '');
+    lastRetryAfter = res.headers?.get('retry-after') ?? null;
+
+    const wait = retryDelayMs(attempts - 1, lastRetryAfter);
+    if (attempts >= maxAttempts || spentMs + wait > maxTotalMs) {
+      return {
+        ok: false, index: cp.index, status: 429, attempts, throttled: true,
+        error: `witness throttled this log (429) after ${attempts} attempt(s)`
+          + `${lastRetryAfter ? `, asking for ${lastRetryAfter}s` : ''}`
+          + '; the checkpoint stays queued and goes out on the next run',
+      };
+    }
+    await sleep(wait);
+    spentMs += wait;
   }
 
   if (!res.ok) {
     const body = await res.text();
     return {
-      ok: false, index: cp.index, status: res.status,
+      ok: false, index: cp.index, status: res.status, attempts,
       error: `witness refused (${res.status}): ${body.slice(0, 300)}`,
       conflict: res.status === 409,
     };
@@ -225,7 +319,7 @@ export async function submitCheckpoint(
 
   mkdirSync(join(dir, RECEIPTS_DIRNAME), { recursive: true });
   writeFileSync(receiptPath(dir, cp.index), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o644 });
-  return { ok: true, index: cp.index, receipt };
+  return { ok: true, index: cp.index, receipt, attempts };
 }
 
 export interface FetchedHead {
