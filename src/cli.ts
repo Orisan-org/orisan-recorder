@@ -124,6 +124,182 @@ function flag(argv: string[], name: string): string | undefined {
   return i >= 0 ? argv[i + 1] : undefined;
 }
 
+/**
+ * Issue #6 — per-command help, and no directory named `--help`.
+ *
+ * The log directory is a positional argument and flags were never validated,
+ * so `orisan-rec demo --help` created a directory called `--help`, wrote 40
+ * events into it and reported success. Two fixes: real help for every command,
+ * and a refusal to treat a flag-looking argument as a path.
+ */
+const COMMAND_HELP: Record<string, string[]> = {
+  start: [
+    'orisan-rec start [--no-demo] [--port N]',
+    '',
+    'Set everything up and open the interface: creates ~/.orisan, generates the',
+    'signing and payload keys if they are missing, writes a demo session unless',
+    '--no-demo, and serves the UI on loopback.',
+    '',
+    '  --no-demo     do not write a fabricated session',
+    '  --port N      UI port (default ' + String(DEFAULT_PORT) + ')',
+  ],
+  showcase: [
+    'orisan-rec showcase [--dir <dir>] [--pause ms] [--keep] [--plain]',
+    '',
+    'Run the whole argument start to finish, no typing: discovery, a recorded',
+    'session, a signed and externally timestamped batch, a CLEAN check, then the',
+    'end of the log is deleted so the chain-only check is fooled and the full',
+    'check catches it. Exits non-zero if any step misbehaves.',
+    '',
+    '  --dir <dir>      where to build the demo log (default: a temp directory)',
+    '  --pause ms       pause between steps, for screen recording',
+    '  --keep           do not delete the log afterwards',
+    '  --plain          no colour',
+    '  --witness <url>  witness to use (default: the hosted one)',
+    '  --tsa <url>      timestamp authority',
+    '  --tsa-ca <pem>   CA bundle for verifying the timestamp',
+  ],
+  scan: [
+    'orisan-rec scan [--out <agents.json>]',
+    '',
+    'Find agents and MCP servers on this machine, by running process and known',
+    'config paths. Reports what it could NOT check as gaps rather than omitting',
+    'them.',
+    '',
+    '  --out <file>  write the findings as JSON',
+  ],
+  attach: [
+    'orisan-rec attach <config> --log <dir>',
+    '',
+    'Route an MCP config through the recorder, backing up the original exactly.',
+    '',
+    '  --log <dir>   log directory the shim records into (required)',
+  ],
+  detach: [
+    'orisan-rec detach <config> [--discard-backup]',
+    '',
+    'Restore the original config byte for byte from the backup attach made.',
+    '',
+    '  --discard-backup   remove the backup after restoring',
+  ],
+  demo: [
+    'orisan-rec demo <dir> [--events N] [--with-ui]',
+    '',
+    'Write a fabricated session into <dir>. Labelled as fabricated: this is not',
+    'a real agent and nothing here should be shown as product output.',
+    '',
+    '  --events N    how many events (default 40)',
+    '  --with-ui     open the interface afterwards',
+  ],
+  ui: [
+    'orisan-rec ui <dir> [--port N] [--payload-key <path>]',
+    '',
+    'Serve the local interface for a log. Loopback only, no authentication.',
+    '',
+    '  --port N              port (default ' + String(DEFAULT_PORT) + ')',
+    '  --payload-key <path>  decrypt and display captured context',
+    '  --key <path>          signing key',
+    '  --witness <file>      witness receipts to check against',
+    '  --tsa-ca <pem>        CA bundle for timestamp verification',
+  ],
+  tap: [
+    'orisan-rec tap <dir> --upstream <url> [--port N]',
+    '',
+    'Record model calls through an HTTP tap. Fail-open: if capture fails the',
+    'agent still works.',
+    '',
+    '  --upstream <url>      the provider to forward to (required)',
+    '  --port N              listen port (default ' + String(DEFAULT_TAP_PORT) + ')',
+    '  --payload-key <path>  encrypt captured context to this key',
+    '  --key <path>          signing key',
+    '  --no-context          record that a call happened, not what was in it',
+  ],
+  chain: [
+    'orisan-rec chain <dir>',
+    '',
+    'Chain-integrity check ONLY. This is not verify: it cannot see a chain that',
+    'was recomputed from genesis, nor events deleted from the end. It answers',
+    '"are these records consistent with each other", which a careful attacker',
+    'can satisfy.',
+  ],
+  checkpoint: [
+    'orisan-rec checkpoint <dir> [--key <path>]',
+    '',
+    'Cut a signed checkpoint over every event not already covered by one.',
+    '',
+    '  --key <path>   signing key (default: the log\'s own)',
+  ],
+  anchor: [
+    'orisan-rec anchor <dir> [--tsa <url>]',
+    '',
+    'Get an RFC 3161 timestamp over any unanchored checkpoint. Anchoring is',
+    'fail-open: a failure queues rather than blocking recording.',
+    '',
+    '  --tsa <url>   timestamp authority (default ' + DEFAULT_TSA_URL + ')',
+  ],
+  witness: [
+    'orisan-rec witness register <dir> --url <witness>',
+    'orisan-rec witness submit <dir>',
+    'orisan-rec witness repoint <dir> --url <new>',
+    '',
+    'An external witness is what makes completeness provable: it remembers what',
+    'this log contained, so deleting the end of the log shows up as a',
+    'disagreement rather than as a shorter log.',
+    '',
+    '  register   pin the witness public key and register this log',
+    '  submit     send any checkpoints the witness has not seen',
+    '  repoint    move a log to a new witness hostname, or refuse and say why',
+  ],
+  verify: [
+    'orisan-rec verify <dir> [--witness <file>] [--tsa-ca <pem>] [--tsa <url>]',
+    '',
+    'Full verification. Exit codes are the contract:',
+    '',
+    '  0  clean          every check ran and passed',
+    '  1  tampered       a check failed',
+    '  2  cannot-verify  a check could not be completed — NEVER a pass',
+    '',
+    '  --witness <file>  witness receipts; without one, completeness cannot be',
+    '                    established and the result is exit 2',
+    '  --tsa-ca <pem>    CA bundle openssl checks the timestamp against',
+    '  --tsa <url>       pin the expected timestamp authority',
+  ],
+};
+
+/**
+ * Which argv slot holds a path, per command.
+ *
+ * Commands absent from this map take no positional path. `witness` is at 2
+ * because argv[1] is its subcommand.
+ */
+const POSITIONAL_AT: Record<string, number> = {
+  attach: 1, detach: 1, demo: 1, ui: 1, tap: 1,
+  chain: 1, checkpoint: 1, anchor: 1, verify: 1, witness: 2,
+};
+
+function helpFor(cmd: string): string | null {
+  const lines = COMMAND_HELP[cmd];
+  return lines ? `${lines.join('\n')}\n` : null;
+}
+
+function wantsHelp(argv: string[]): boolean {
+  return argv.includes('--help') || argv.includes('-h');
+}
+
+/**
+ * Refuse to treat a flag as a path.
+ *
+ * Returns an error message, or null if the positional is fine. Without this,
+ * a mistyped flag becomes a directory name and the command reports success.
+ */
+function badPositional(cmd: string, argv: string[]): string | null {
+  const idx = POSITIONAL_AT[cmd];
+  if (idx === undefined) return null;
+  const value = argv[idx];
+  if (value === undefined || !value.startsWith('-')) return null;
+  return `${cmd}: expected a directory, got the flag "${value}".\n\n${helpFor(cmd) ?? usage()}`;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, dir] = argv;
 
@@ -131,6 +307,18 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(usage());
     return 0;
   }
+
+  // Help before anything else touches the filesystem. `demo --help` used to
+  // create a directory called `--help` and write 40 events into it.
+  if (wantsHelp(argv)) {
+    const text = helpFor(cmd);
+    if (text) { process.stdout.write(text); return 0; }
+    process.stdout.write(usage());
+    return 0;
+  }
+
+  const bad = badPositional(cmd, argv);
+  if (bad) { process.stderr.write(bad); return 2; }
   if (cmd === 'showcase') {
     const pauseFlag = flag(argv, '--pause');
     // Drive the real CLI as a subprocess: what is on screen is what ran.
