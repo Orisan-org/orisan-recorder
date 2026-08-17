@@ -89,6 +89,47 @@ process is alive and guessing wrong causes the corruption the lock prevents.
 Reading is never blocked: `verify`, the UI and every export open read-only, take
 no lock, and work fine against a log that is being written.
 
+## Retention
+
+    orisan-rec prune <dir> --keep-last 5
+    orisan-rec prune <dir> --before 2026-01-01 --dry-run
+
+A log only grows. But deleting old events IS the truncation attack, so pruning
+has to be something a verifier can tell apart from one.
+
+**Events are removed; checkpoints and anchors are kept.** A checkpoint is a few
+hundred bytes committing to a Merkle root over its range — the events are the
+megabytes. Keeping the signed, externally timestamped checkpoint leaves proof of
+exactly what used to be there, fixed in time before anyone could choose what to
+delete. A pruned range is not a hole in the evidence; it is a range whose
+contents are gone but whose fingerprint is not.
+
+Four rules, all enforced by `verify`:
+
+1. **Whole ranges only.** Never part of a checkpoint — half a range would leave
+   a retained root that could never be recomputed and never be shown wrong.
+2. **Anchored ranges only.** Without an external timestamp there is no proof of
+   what the range held before someone decided to remove it. Not overridable.
+3. **It is recorded in the log.** A `prune` event goes into the chain and its
+   `args_digest` commits to the manifest entry in `prunes.jsonl`. A manifest on
+   its own proves nothing — anyone can write a file. The chain has to vouch for
+   it.
+4. **The chain stays walkable.** The manifest records the boundary hashes, so
+   the event after a gap still links to what preceded it.
+
+Measured on a real 20,000-event log with four anchored checkpoints: 21 MB to
+11 MB, 15,000 events removed, every checkpoint and anchor retained, and verify
+reports `pruned: 15000` with no tampered finding.
+
+Remove the same bytes without the record and it is tampering, which is the
+point:
+
+    TAMPERED [seq 15000] chain_seq_gap
+    TAMPERED [checkpoint ..4999] checkpoint_count_mismatch
+
+Pruning is not reversible, and pruned content cannot be recovered from the log.
+It is a decision to keep the proof and drop the detail, taken on the record.
+
 ## Custody: the part that is operational, not cryptographic
 
 Three things must live somewhere the recorder's operator cannot silently rewrite,
@@ -235,6 +276,7 @@ the list of what was wrong is more useful than a claim that nothing is.
     src/schema.ts     event shape, canonical JSON, chain hashing
     src/store.ts      append-only segments, fsync, crash recovery, read-only mode
     src/lock.ts       exclusive writer lock on a log directory
+    src/prune.ts      retention: drop old events, keep the proof
     src/index-db.ts   SQLite index (a cache; the JSONL is the truth)
     src/payloads.ts   sodium crypto_box_seal payload blobs
     src/merkle.ts     RFC 6962 Merkle tree, batch and streaming

@@ -7,6 +7,7 @@
  */
 
 import { generateDemoSession } from './demo.js';
+import { prune, selectForPrune } from './prune.js';
 import { scan, serverCount } from './discover.js';
 import { attach, detach, discardBackup } from './attach.js';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +46,8 @@ function usage(): string {
     '  orisan-rec tap <dir> --upstream <url>     record model calls through an HTTP tap',
     '        [--port N] [--payload-key <path>] [--key <signing>] [--no-context]',
     '  orisan-rec chain <dir>                    chain-integrity check only (NOT verify)',
+    '  orisan-rec prune <dir> [--before <d>] [--keep-last N] [--dry-run]',
+    '                                            drop old events, keep the proof',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
     '  orisan-rec witness register <dir> --url <witness>   register and PIN the witness key',
@@ -214,6 +217,25 @@ const COMMAND_HELP: Record<string, string[]> = {
     '  --key <path>          signing key',
     '  --no-context          record that a call happened, not what was in it',
   ],
+  prune: [
+    'orisan-rec prune <dir> [--before <date>] [--keep-last N] [--dry-run]',
+    '',
+    'Remove old events while keeping the proof of what they were.',
+    '',
+    'Only whole checkpoint ranges are removed, and only ranges that are',
+    'externally anchored. The signed checkpoint and its timestamp stay behind,',
+    'so the Merkle root still commits to what was deleted and still proves it',
+    'was fixed before anyone chose to delete it. The prune is recorded as an',
+    'event in the log itself, so the gap is explained rather than silent:',
+    'verify accepts a recorded prune and still reports an unrecorded gap as',
+    'tampering.',
+    '',
+    'Pruning is not reversible. Pruned content cannot be recovered.',
+    '',
+    '  --before <date>   prune ranges whose checkpoint predates this (ISO 8601)',
+    '  --keep-last N     keep the newest N checkpoint ranges, prune the rest',
+    '  --dry-run         say what would go, change nothing',
+  ],
   chain: [
     'orisan-rec chain <dir>',
     '',
@@ -274,7 +296,7 @@ const COMMAND_HELP: Record<string, string[]> = {
  */
 const POSITIONAL_AT: Record<string, number> = {
   attach: 1, detach: 1, demo: 1, ui: 1, tap: 1,
-  chain: 1, checkpoint: 1, anchor: 1, verify: 1, witness: 2,
+  chain: 1, checkpoint: 1, anchor: 1, verify: 1, prune: 1, witness: 2,
 };
 
 function helpFor(cmd: string): string | null {
@@ -544,6 +566,61 @@ async function main(argv: string[]): Promise<number> {
   }
 
   switch (cmd) {
+    case 'prune': {
+      const beforeRaw = flag(argv, '--before');
+      const keepRaw = flag(argv, '--keep-last');
+      if (beforeRaw === undefined && keepRaw === undefined) {
+        process.stderr.write('prune needs --before <date> or --keep-last N; refusing to guess a retention policy\n');
+        return 2;
+      }
+      const before = beforeRaw !== undefined ? new Date(beforeRaw) : undefined;
+      if (before && Number.isNaN(before.getTime())) {
+        process.stderr.write(`--before ${beforeRaw} is not a date I can read; use ISO 8601\n`);
+        return 2;
+      }
+      const keepLast = keepRaw !== undefined ? Number.parseInt(keepRaw, 10) : undefined;
+      if (keepLast !== undefined && (!Number.isInteger(keepLast) || keepLast < 0)) {
+        process.stderr.write('--keep-last must be a non-negative integer\n');
+        return 2;
+      }
+
+      const opts = {
+        ...(before ? { before } : {}),
+        ...(keepLast !== undefined ? { keepLast } : {}),
+      };
+      const dryRun = argv.includes('--dry-run');
+      const selection = selectForPrune(dir, opts);
+
+      // Say why every retained range was retained. A retention tool that
+      // silently keeps things is one you stop trusting to remove them.
+      for (const c of selection.candidates) {
+        if (c.eligible) continue;
+        process.stdout.write(
+          `  keeping checkpoint ${c.checkpoint.index} (${c.checkpoint.seq_from}..${c.checkpoint.seq_to}): ${c.blocked}\n`,
+        );
+      }
+      if (selection.eligible.length === 0) {
+        process.stdout.write('nothing to prune\n');
+        return 0;
+      }
+
+      const r = prune(dir, { ...opts, dryRun });
+      for (const range of r.ranges) {
+        process.stdout.write(
+          `  ${dryRun ? 'would prune' : 'pruned'} checkpoint ${range.checkpoint_index} `
+          + `(${range.seq_from}..${range.seq_to}, ${range.count} events); root ${range.merkle_root.slice(0, 16)}… kept\n`,
+        );
+      }
+      process.stdout.write(
+        dryRun
+          ? `\n${r.eventsRemoved} event(s) would be removed. Nothing was changed.\n`
+          : `\n${r.eventsRemoved} event(s) removed, ${Math.round(r.bytesFreed / 1024)} KB freed.\n`
+            + `Recorded as prune event seq ${r.event?.seq}. Run \`orisan-rec checkpoint\` and \`anchor\` `
+            + 'so the prune itself is timestamped.\n',
+      );
+      return 0;
+    }
+
     case 'demo': {
       const eventsFlag = flag(argv, '--events');
       const r = generateDemoSession(dir, {

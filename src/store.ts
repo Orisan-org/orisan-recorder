@@ -102,7 +102,7 @@ export function segmentIndex(name: string): number {
  * A "complete" line is one terminated by \n; anything after the last \n is a
  * torn write.
  */
-function splitLines(buf: Buffer): { lines: string[]; remainder: Buffer } {
+export function splitLines(buf: Buffer): { lines: string[]; remainder: Buffer } {
   const text = buf.toString('utf8');
   const lastNl = text.lastIndexOf('\n');
   if (lastNl === -1) return { lines: [], remainder: buf };

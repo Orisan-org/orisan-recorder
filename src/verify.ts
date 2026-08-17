@@ -40,6 +40,7 @@ import { anchorPaths, readAnchor, readAttestedTime } from './tsa.js';
 import { highestWitnessedIndex, readWitness, verifyAgainstWitness } from './witness.js';
 import { ChainWalker, computeEventHash, type ChainBreak, type RecordedEvent } from './schema.js';
 import { MerkleAccumulator } from './merkle.js';
+import { PRUNES_FILENAME, pruneDigest, readPruneRecords, type PrunedRange } from './prune.js';
 
 /**
  * At most this many chain breaks are reported individually.
@@ -70,6 +71,8 @@ interface EventScan {
   ranges: Map<number, RangeSummary>;
   /** Events with seq strictly greater than the highest anchored seq_to. */
   pastLastAnchor: number;
+  /** Prune boundaries the chain walk could not join up. */
+  pruneJoinFailures: string[];
 }
 
 /**
@@ -90,8 +93,16 @@ function scanEvents(
   store: EventStore,
   checkpoints: readonly SignedCheckpoint[],
   lastAnchoredSeq: number,
+  pruned: readonly PrunedRange[] = [],
 ): EventScan {
-  const walker = new ChainWalker();
+  // A recorded prune is a legitimate discontinuity, so the walker is restarted
+  // on the far side of each one using the hash the manifest recorded. An
+  // UNRECORDED gap gets no such treatment and still breaks the chain, which is
+  // the whole distinction (issue #2b).
+  const gaps = [...pruned].sort((a, b) => a.seq_from - b.seq_from);
+  const pruneJoinFailures: string[] = [];
+  let walker = new ChainWalker();
+  let nextGap = 0;
   const chainBreaks: ChainBreak[] = [];
   const ranges = new Map<number, RangeSummary>();
 
@@ -122,6 +133,14 @@ function scanEvents(
     headSeq = e.seq;
     if (e.seq > lastAnchoredSeq) pastLastAnchor++;
 
+    // Crossed a pruned range: resume from the recorded boundary hash instead
+    // of reporting the gap the removal necessarily left.
+    while (nextGap < gaps.length && e.seq > gaps[nextGap]!.seq_to) {
+      const g = gaps[nextGap]!;
+      walker = new ChainWalker(g.last_event_hash, g.seq_to + 1);
+      nextGap++;
+    }
+
     for (const b of walker.push(e)) {
       chainBreakTotal++;
       if (chainBreaks.length < MAX_REPORTED_CHAIN_BREAKS) chainBreaks.push(b);
@@ -151,6 +170,33 @@ function scanEvents(
   }
   closeOpen();
 
+  // The manifest's boundary hashes are only worth something if they line up
+  // with what is still there. A prune whose first_prev_hash does not match the
+  // event before the gap is a prune record written to excuse a different
+  // deletion.
+  if (gaps.length > 0) {
+    const boundaries = new Map<number, RecordedEvent>();
+    const wanted = new Set<number>();
+    for (const g of gaps) { wanted.add(g.seq_from - 1); wanted.add(g.seq_to + 1); }
+    for (const e of store.read()) if (wanted.has(e.seq)) boundaries.set(e.seq, e);
+    for (const g of gaps) {
+      const before = boundaries.get(g.seq_from - 1);
+      if (before && before.hash !== g.first_prev_hash) {
+        pruneJoinFailures.push(
+          `prune of ${g.seq_from}..${g.seq_to} records first_prev_hash ${g.first_prev_hash.slice(0, 12)}… `
+          + `but seq ${g.seq_from - 1} hashes to ${before.hash.slice(0, 12)}…`,
+        );
+      }
+      const after = boundaries.get(g.seq_to + 1);
+      if (after && after.prev_hash !== g.last_event_hash) {
+        pruneJoinFailures.push(
+          `prune of ${g.seq_from}..${g.seq_to} records last_event_hash ${g.last_event_hash.slice(0, 12)}… `
+          + `but seq ${g.seq_to + 1} follows ${after.prev_hash.slice(0, 12)}…`,
+        );
+      }
+    }
+  }
+
   // Checkpoints entirely beyond the end of the log still need a summary, or
   // the count check would have nothing to compare against and truncation
   // below an anchor would lose one of its two signals.
@@ -160,7 +206,7 @@ function scanEvents(
     }
   }
 
-  return { total, headSeq, chainBreaks, chainBreakTotal, ranges, pastLastAnchor };
+  return { total, headSeq, chainBreaks, chainBreakTotal, ranges, pastLastAnchor, pruneJoinFailures };
 }
 
 /** An event minus its stored hash, ready for recomputation. */
@@ -199,6 +245,8 @@ export interface VerifyReport {
   verdict: Verdict;
   exitCode: number;
   events: number;
+  /** Events removed by a recorded, chain-vouched retention prune (issue #2b). */
+  prunedEvents: number;
   checkpoints: number;
   anchored: number;
   findings: Finding[];
@@ -365,6 +413,7 @@ export function verify(dir: string, opts: VerifyOptions = {}): VerifyReport {
       verdict: 'cannot_verify',
       exitCode: EXIT_CANNOT_VERIFY,
       events: 0,
+      prunedEvents: 0,
       checkpoints: 0,
       anchored: 0,
       findings: [{
@@ -411,8 +460,39 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
     ? Math.max(...anchoredCheckpoints.map((c) => c.seq_to))
     : -1;
 
-  // ---- 1b. one pass over the events --------------------------------------
-  const scan = scanEvents(store, checkpoints, lastAnchoredSeq);
+  // ---- 1b. recorded prunes ------------------------------------------------
+  // A prune record only counts if the chain itself vouches for it: the log
+  // must contain a `prune` event whose args_digest is the digest of that
+  // manifest entry. A manifest anyone can drop into the directory would be a
+  // universal excuse for a deletion, which is exactly what must not exist.
+  const pruneRecords = readPruneRecords(dir);
+  const claimedDigests = new Map(pruneRecords.map((r) => [pruneDigest(r), r]));
+  const vouched = new Set<string>();
+  if (pruneRecords.length > 0) {
+    for (const e of store.read()) {
+      if (e.kind === 'prune' && e.args_digest && claimedDigests.has(e.args_digest)) vouched.add(e.args_digest);
+    }
+  }
+  const acceptedPrunes = pruneRecords.filter((r) => vouched.has(pruneDigest(r)));
+  const prunedRanges = acceptedPrunes.flatMap((r) => r.ranges);
+  const prunedByCheckpoint = new Map(prunedRanges.map((r) => [r.checkpoint_index, r]));
+
+  for (const r of pruneRecords) {
+    if (vouched.has(pruneDigest(r))) continue;
+    findings.push({
+      severity: 'tampered',
+      code: 'prune_not_in_chain',
+      message:
+        `${PRUNES_FILENAME} claims a prune of ${r.ranges.map((x) => `${x.seq_from}..${x.seq_to}`).join(', ')} `
+        + 'but no prune event in the log commits to it. An unvouched manifest is an excuse, not a record',
+    });
+  }
+
+  // ---- 1c. one pass over the events --------------------------------------
+  const scan = scanEvents(store, checkpoints, lastAnchoredSeq, prunedRanges);
+  for (const detail of scan.pruneJoinFailures) {
+    findings.push({ severity: 'tampered', code: 'prune_boundary_mismatch', message: detail });
+  }
   for (const b of scan.chainBreaks) {
     findings.push({
       severity: 'tampered',
@@ -624,6 +704,42 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
   // Only meaningful against checkpoints that are actually anchored: an
   // unanchored checkpoint can simply be re-signed alongside the rewrite.
   for (const cp of anchoredCheckpoints) {
+    const pruneOfThis = prunedByCheckpoint.get(cp.index);
+    if (pruneOfThis) {
+      // The events are gone on purpose. What is checked instead is that the
+      // manifest describes THIS checkpoint: same range, same count, same root.
+      // The anchored root is retained precisely so the removal cannot be used
+      // to swap a range for a different one.
+      const consistent =
+        pruneOfThis.seq_from === cp.seq_from &&
+        pruneOfThis.seq_to === cp.seq_to &&
+        pruneOfThis.count === cp.count &&
+        pruneOfThis.merkle_root === cp.merkle_root;
+      if (!consistent) {
+        findings.push({
+          severity: 'tampered',
+          code: 'prune_describes_a_different_range',
+          checkpoint_seq_to: cp.seq_to,
+          message:
+            `the prune record for checkpoint ${cp.index} says ${pruneOfThis.seq_from}..${pruneOfThis.seq_to} `
+            + `(${pruneOfThis.count} events, root ${pruneOfThis.merkle_root.slice(0, 12)}…) but the anchored `
+            + `checkpoint says ${cp.seq_from}..${cp.seq_to} (${cp.count} events, root ${cp.merkle_root.slice(0, 12)}…)`,
+        });
+        continue;
+      }
+      const stillPresent = scan.ranges.get(cp.seq_to)?.present ?? 0;
+      if (stillPresent !== 0) {
+        findings.push({
+          severity: 'cannot_verify',
+          code: 'prune_incomplete',
+          checkpoint_seq_to: cp.seq_to,
+          message:
+            `checkpoint ${cp.index} is recorded as pruned but ${stillPresent} of its events are still present; `
+            + 'the prune did not finish. Re-run `orisan-rec prune`',
+        });
+      }
+      continue;
+    }
     const f = checkCheckpointAgainstEvents(cp, scan.ranges.get(cp.seq_to));
     if (f) findings.push(f);
   }
@@ -836,6 +952,7 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
     verdict,
     exitCode: exitCodeFor(verdict),
     events: scan.total,
+    prunedEvents: prunedRanges.reduce((n, r) => n + r.count, 0),
     checkpoints: checkpoints.length,
     anchored,
     findings,
@@ -850,7 +967,10 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
 export function formatReport(r: VerifyReport, dir: string): string {
   const lines: string[] = [];
   lines.push(`orisan-rec verify ${dir}`);
-  lines.push(`  events: ${r.events}  checkpoints: ${r.checkpoints}  anchors verified: ${r.anchored}`);
+  lines.push(
+    `  events: ${r.events}  checkpoints: ${r.checkpoints}  anchors verified: ${r.anchored}`
+    + (r.prunedEvents > 0 ? `  pruned: ${r.prunedEvents}` : ''),
+  );
   lines.push('');
 
   if (r.opensslCommands.length > 0) {

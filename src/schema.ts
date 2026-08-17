@@ -32,6 +32,13 @@ export const EVENT_KINDS = [
   'config_change',
   'flag',
   'redaction',
+  /**
+   * Issue #2b — a retention prune. Records that a range of events was removed
+   * on purpose, so the gap is explained inside the chain rather than looking
+   * like the truncation attack. args_digest commits to the manifest entry in
+   * prunes.jsonl; see src/prune.ts.
+   */
+  'prune',
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];

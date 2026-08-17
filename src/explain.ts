@@ -213,6 +213,16 @@ export const FINDING_COPY: Record<string, string> = {
     'Some recent actions are not covered by a timestamped summary yet. This is normal while an agent is still running.',
   checkpoints_not_witnessed:
     'Some summaries have not been sent to the witness yet, so its copy is behind.',
+  chain_breaks_truncated:
+    'There are too many broken records to list them all. A log this damaged should be treated as lost rather than repaired.',
+  prune_not_in_chain:
+    'This folder claims some old records were removed on purpose, but the log itself has no record of that happening. A note anyone could drop in is an excuse, not a record.',
+  prune_boundary_mismatch:
+    'Records were removed on purpose, but the note describing the removal does not line up with the records either side of the gap. It describes a different removal from the one that happened.',
+  prune_describes_a_different_range:
+    'The note describing a removal does not match the summary it claims to cover — a different set of records, or a different number of them.',
+  prune_incomplete:
+    'Some records are marked as removed but are still here. The clear-out did not finish; running it again will complete it.',
   signing_key_beside_data:
     'The signing key is stored next to the records it signs. Anyone who can edit the records could re-sign them.',
   openssl_not_found:
