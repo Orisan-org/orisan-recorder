@@ -21,7 +21,8 @@ export default function globalSetup(): void {
       '  affected: witness-attacks, repoint, throttle, showcase\n' +
       '  covering: truncation, fork and rug-pull detection — the checks that need\n' +
       '            a witness the operator does not control. Everything else runs.\n' +
-      '  to run:   clone orisan-witness to ../orisan-witness, then npm install there\n' +
+      '  to run:   clone Orisan-org/orisan-witness to ../orisan-witness and npm\n' +
+      '            install there, or set ORISAN_WITNESS_SRC to its src directory\n' +
       `${line}\n`,
   );
 }

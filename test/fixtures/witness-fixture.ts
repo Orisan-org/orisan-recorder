@@ -26,14 +26,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** Where the sibling checkout is expected, relative to this repository. */
-export const WITNESS_SRC = join(here, '..', '..', '..', 'orisan-witness', 'src');
+/**
+ * Where the witness service's sources are.
+ *
+ * Defaults to a sibling checkout, which is the layout a developer with both
+ * repositories has. ORISAN_WITNESS_SRC overrides it, because CI checks the
+ * witness out inside its own workspace — a runner cannot place a repository
+ * beside the workspace — and because nobody should have to arrange their
+ * directories a particular way to run a test suite.
+ */
+export const WITNESS_SRC =
+  process.env['ORISAN_WITNESS_SRC'] ?? join(here, '..', '..', '..', 'orisan-witness', 'src');
 
 /** Is the real witness service available to run against? */
 export const witnessAvailable: boolean = existsSync(join(WITNESS_SRC, 'db.ts'));
 
 export const WITNESS_SKIP_REASON =
-  'needs the orisan-witness sibling checkout at ../orisan-witness (a separate repository)';
+  'needs the orisan-witness service: a sibling checkout at ../orisan-witness, ' +
+  'or ORISAN_WITNESS_SRC pointing at its src directory';
 
 export interface LiveWitness {
   url: string;
