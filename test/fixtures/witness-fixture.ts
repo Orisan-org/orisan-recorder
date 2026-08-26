@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -47,17 +47,38 @@ export async function startWitness(): Promise<LiveWitness> {
     // Reached only if a suite forgot to guard itself. Loud, not silent.
     throw new Error(
       `startWitness() called but the witness service is not present: ${WITNESS_SKIP_REASON}. ` +
-        'Guard the suite with `describe.skipIf(!witnessAvailable)`.',
+        'Guard the suite with `witnessSuite` / `describe.skipIf(!witnessAvailable)`.',
     );
   }
-  // Imported dynamically so this module loads without the sibling present.
-  // A static import would fail at collection and take the whole file with it.
-  const [{ WitnessDb }, { loadOrCreateKey }, { WitnessService }, { startServer }] = await Promise.all([
-    import('orisan-witness/src/db.js'),
-    import('orisan-witness/src/keys.js'),
-    import('orisan-witness/src/service.js'),
-    import('orisan-witness/src/server.js'),
+
+  // Imported dynamically so this module loads without the sibling present: a
+  // static import fails at collection and takes the whole file with it.
+  //
+  // The specifier is BUILT rather than written as a literal, so TypeScript
+  // does not try to resolve it. tsc resolves the argument of `import()` when
+  // it is a string literal, and would then fail `npm run typecheck` in exactly
+  // the clone this change exists to make work. The module is genuinely
+  // optional; only the runtime can know whether it is there.
+  // By absolute file URL, not by package specifier. A bare specifier would
+  // need a build alias, and a TEMPLATE specifier is invisible to that alias —
+  // which is how the first version of this threw inside beforeAll while
+  // `witnessAvailable` was correctly true. An absolute path needs no alias and
+  // is still opaque to tsc, which is the property both ends need.
+  const load = async (name: string): Promise<Record<string, unknown>> =>
+    (await import(pathToFileURL(join(WITNESS_SRC, `${name}.ts`)).href)) as Record<string, unknown>;
+
+  const [dbMod, keyMod, svcMod, srvMod] = await Promise.all([
+    load('db'), load('keys'), load('service'), load('server'),
   ]);
+
+  const WitnessDb = dbMod['WitnessDb'] as new (path: string) => { close(): void };
+  const loadOrCreateKey = keyMod['loadOrCreateKey'] as (path: string) => unknown;
+  const WitnessService = svcMod['WitnessService'] as new (
+    db: unknown, key: unknown,
+  ) => { publicKeyPem: string };
+  const startServer = srvMod['startServer'] as (
+    opts: unknown,
+  ) => Promise<{ port: number; close: () => Promise<void> }>;
 
   const dir = mkdtempSync(join(tmpdir(), 'witness-svc-'));
   const db = new WitnessDb(join(dir, 'w.db'));

@@ -11,14 +11,8 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 60_000,
   },
-  resolve: {
-    alias: {
-      // The witness is a sibling REPOSITORY, not a dependency of this one: it
-      // is unpublished, so a public clone will not have it and must still run
-      // green. Resolved by relative path rather than through node_modules, so
-      // no `file:` entry in package.json can fail a clone's install. The suites
-      // that need it skip when it is absent — see test/fixtures/witness-fixture.ts.
-      'orisan-witness/src': join(here, '..', 'orisan-witness', 'src'),
-    },
-  },
+  // No alias for the witness sibling: test/fixtures/witness-fixture.ts imports
+  // it by absolute file URL when it is present, and skips its suites when it
+  // is not. An alias would only matter for a bare specifier, and a bare
+  // specifier is what tsc would try to resolve in a clone that has no sibling.
 });
