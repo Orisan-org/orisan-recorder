@@ -269,6 +269,47 @@ describe('attested time (Job 5) — catches re-anchoring even with no witness', 
     expect(r.exitCode).toBe(EXIT_TAMPERED);
   });
 
+  /**
+   * The mirror of backdatedLog: events stamped AHEAD of the anchor that covers them.
+   *
+   * A late anchor has innocent explanations — batching, a slow network, a queued
+   * checkpoint — which is why it gets an hour of tolerance. An event dated after the
+   * authority attested to it has none. A TSA cannot attest to something that has not
+   * happened yet, so this is not a suspicious pattern, it is an impossible one, and the
+   * only thing it can mean is that the host clock lied.
+   */
+  async function forwardDatedLog(aheadMs = 3 * 60 * 60 * 1000): Promise<void> {
+    const base = Date.now() + aheadMs;
+    const rec = Recorder.open(dir, {
+      checkpointInterval: 10, fsync: false, anchor: { ...tsa.anchorOptions },
+      witnessFile, signingKeyPath,
+    });
+    for (let i = 0; i < 10; i++) {
+      await rec.record({ ...ev(i), ts: new Date(base + i * 1000).toISOString() });
+    }
+    await rec.end();
+  }
+
+  // Witnessed, signed, anchored — the strongest configuration the design offers.
+  // Before this check existed it returned `clean`, exit 0, findings [].
+  it('an event dated after the anchor covering it is tampering', async () => {
+    await forwardDatedLog();
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.findings.some((f) => f.code === 'event_after_anchor')).toBe(true);
+    expect(r.verdict).toBe('tampered');
+    expect(r.exitCode).toBe(EXIT_TAMPERED);
+  });
+
+  // The other side of the tolerance. Two clocks both trying to be right disagree by
+  // seconds, not minutes, and a check that fired on that would be the check people
+  // learn to ignore. 30s ahead must stay clean, or 60s was fitted rather than chosen.
+  it('a few seconds of clock jitter ahead is not tampering', async () => {
+    await forwardDatedLog(30 * 1000);
+    const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });
+    expect(r.findings.some((f) => f.code === 'event_after_anchor')).toBe(false);
+    expect(r.verdict).toBe('clean');
+  });
+
   it('an honest log anchored immediately is inside the window', async () => {
     await honestLog(10, 10);
     const r = verify(dir, { tsaCaFile: tsa.caFile, witnessFile });

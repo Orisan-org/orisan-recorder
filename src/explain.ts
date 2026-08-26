@@ -246,6 +246,8 @@ export const FINDING_COPY: Record<string, string> = {
   checkpoint_bad_signature: 'A summary’s signature does not check out.',
   anchor_too_late:
     'A batch was timestamped long after the actions it covers. That proves when it was re-stamped, not when the actions happened.',
+  event_after_anchor:
+    'Actions are dated later than the outside timestamp that covers them. Nothing can be stamped before it happens, so the clock that recorded these actions was wrong.',
   tsa_verification_failed: 'openssl rejected an outside timestamp.',
   anchor_digest_mismatch: 'A timestamp belongs to a different batch than the one it is filed under.',
   unreadable: 'A file could not be read, so the check could not be completed.',
