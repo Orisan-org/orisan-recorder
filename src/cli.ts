@@ -38,7 +38,9 @@ function usage(): string {
     'Usage:',
     '  orisan-rec start                          set everything up and open the interface',
     '  orisan-rec showcase [--pause ms] [--keep] run the whole demo, start to finish',
+    '        [--scan-home <dir>]                 scan a fabricated root, for recordings',
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
+    '        [--home <dir>] [--no-processes]     scan another root / skip the process probe',
     '  orisan-rec attach <config> --log <dir>    route a config through the recorder',
     '  orisan-rec detach <config>                restore the original config exactly',
     '  orisan-rec demo <dir> [--events N] [--with-ui]  write a fabricated session',
@@ -78,6 +80,7 @@ async function serveUi(dir: string, argv: string[]): Promise<number> {
     // but cannot display it. That is the correct default: reading prompts
     // should take a deliberate act.
     ...(flag(argv, '--payload-key') !== undefined ? { payloadKeyPath: flag(argv, '--payload-key')! } : {}),
+    ...(flag(argv, '--scan-home') !== undefined ? { scanHome: flag(argv, '--scan-home')! } : {}),
   });
   const url = `http://127.0.0.1:${bound}`;
   process.stdout.write(
@@ -360,6 +363,7 @@ async function main(argv: string[]): Promise<number> {
       ...(pauseFlag !== undefined ? { pauseMs: Number.parseInt(pauseFlag, 10) } : {}),
       ...(argv.includes('--keep') ? { keep: true } : {}),
       ...(flag(argv, '--dir') !== undefined ? { dir: flag(argv, '--dir')! } : {}),
+      ...(flag(argv, '--scan-home') !== undefined ? { scanHome: flag(argv, '--scan-home')! } : {}),
       ...(flag(argv, '--witness') !== undefined ? { witnessUrl: flag(argv, '--witness')! } : {}),
       ...(flag(argv, '--tsa') !== undefined ? { tsaUrl: flag(argv, '--tsa')! } : {}),
       ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
@@ -393,7 +397,16 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (cmd === 'scan') {
-    const result = scan();
+    // --home scans a different root; --no-processes skips the process probe
+    // and says so in the gaps. Both exist so a published recording can be made
+    // without putting the recorder's own machine on screen, and so anyone can
+    // reproduce that recording. Neither hides anything: the report states the
+    // root it scanned and every probe it did not run.
+    const homeFlag = flag(argv, '--home');
+    const result = scan({
+      ...(homeFlag !== undefined ? { home: homeFlag } : {}),
+      ...(argv.includes('--no-processes') ? { skipProcesses: true } : {}),
+    });
     const out = flag(argv, '--out');
     if (out !== undefined) {
       writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`);

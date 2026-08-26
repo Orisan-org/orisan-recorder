@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/demo/projects"]},
+    "memory": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]}
+  }
+}

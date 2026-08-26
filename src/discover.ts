@@ -369,7 +369,13 @@ export function scan(opts: ScanOptions = {}): ScanResult {
     }
   }
 
-  if (!opts.skipProcesses) {
+  if (opts.skipProcesses) {
+    // Never a silent omission. A probe that did not run is reported as a gap,
+    // the same as one that failed — otherwise "no running servers found" and
+    // "we did not look for running servers" render identically, and the second
+    // is the one an operator must not mistake for the first.
+    gaps.push('process scan skipped at the caller\'s request; running servers were not looked for');
+  } else {
     const running = scanProcesses(gaps, opts.psOutput);
     if (running.length > 0) {
       surfaces.push({ surface: 'Running processes', config_path: null, servers: running });

@@ -53,6 +53,8 @@ export function defaultUiDir(): string {
 }
 
 export interface ServerOptions {
+  /** Scan this root instead of the real machine. Used only to produce the published screenshots. */
+  scanHome?: string;
   logDir: string;
   port?: number;
   uiDir?: string;
@@ -205,7 +207,16 @@ export function createApp(opts: ServerOptions) {
       }
 
       try {
-        if (path === '/api/scan') { json(res, 200, scan()); return; }
+        if (path === '/api/scan') {
+          // Same fabricated-root override the showcase uses, for the same
+          // reason: the screenshots in media/ are published, and a screenshot
+          // of a real Agents screen is an inventory of the machine that took
+          // it. Unset in normal use, where this reads your actual machine.
+          json(res, 200, scan({
+            ...(opts.scanHome !== undefined ? { home: opts.scanHome, skipProcesses: true } : {}),
+          }));
+          return;
+        }
 
         if (path === '/api/status') {
           const report = await verifyNow(opts);

@@ -49,6 +49,18 @@ export interface ShowcaseOptions {
    * the arguments run, verbatim.
    */
   displayAs?: string;
+  /**
+   * Scan this root instead of the real machine, and skip the process probe.
+   *
+   * Used when producing the published recording. Step 1's whole point is that
+   * it reads a real machine, and a recording of a real machine is a public
+   * inventory of the recorder author's username, installed clients, project
+   * names and process ids. Pointing it at a fabricated home keeps the
+   * demonstration and drops the disclosure — and the substitution is stated on
+   * screen rather than quietly made, because a demo that hides how it was
+   * produced is the thing this project exists not to be.
+   */
+  scanHome?: string;
   /** Drop colour, for tests and for piping to a file. */
   plain?: boolean;
   out?: (s: string) => void;
@@ -142,8 +154,16 @@ export async function runShowcase(opts: ShowcaseOptions = {}): Promise<ShowcaseR
 
   // ---- 1. discovery -------------------------------------------------------
   await heading(1, 'What is on this machine',
-    'Including agents nobody registered. This is the part no competitor does.');
-  record(1, 'scan', await shown(['scan']), 0);
+    'Including agents nobody registered.');
+  const scanHome = opts.scanHome;
+  if (scanHome) {
+    out(`${p.dim}   Scanning a fabricated home directory, not this machine: a published${p.reset}\n`);
+    out(`${p.dim}   recording of a real one is an inventory of its owner. Run \`orisan-rec${p.reset}\n`);
+    out(`${p.dim}   scan\` with no arguments to read yours.${p.reset}\n`);
+  }
+  record(1, 'scan', await shown(
+    scanHome ? ['scan', '--home', scanHome, '--no-processes'] : ['scan'],
+  ), 0);
 
   // ---- 2. record ----------------------------------------------------------
   await heading(2, 'Record a session',

@@ -95,8 +95,19 @@ describe('known locations', () => {
     expect(r.gaps.some((g) => g.includes('Claude Desktop'))).toBe(true);
   });
 
-  it('an empty home finds nothing and reports no gaps', () => {
+  it('an empty home finds nothing, and the skipped probe is the only gap', () => {
     const r = scan({ home, skipProcesses: true });
+    expect(r.surfaces).toEqual([]);
+    // A probe that did not run is reported, never omitted: "no running servers
+    // found" and "we did not look for running servers" must not render the
+    // same, and the second is the one an operator could mistake for the first.
+    expect(r.gaps).toEqual([
+      "process scan skipped at the caller's request; running servers were not looked for",
+    ]);
+  });
+
+  it('a scan that runs every probe reports no gaps at all', () => {
+    const r = scan({ home, psOutput: '' });
     expect(r.surfaces).toEqual([]);
     expect(r.gaps).toEqual([]);
   });
