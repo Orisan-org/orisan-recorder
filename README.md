@@ -1,6 +1,6 @@
 # orisan-recorder
 
-[![CI](https://github.com/rakeshb114/orisan-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/rakeshb114/orisan-recorder/actions/workflows/ci.yml)
+[![CI](https://github.com/Orisan-org/orisan-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/Orisan-org/orisan-recorder/actions/workflows/ci.yml)
 
 A recorder for AI agent actions.
 
