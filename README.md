@@ -9,8 +9,8 @@ Two properties are the point of this project, in order:
 1. **Discovery.** Find every agent and MCP server on the machine, so the record can
    claim to be *complete*. `orisan-rec scan` reads the known config locations for
    seven surfaces, hunts stray `mcpServers` files nobody registered, and looks at
-   running processes. Every server carries how it was found. No competitor can
-   name an agent it was not told about.
+   running processes. Every server carries how it was found, so a config-file
+   hit and a running process are told apart rather than merged.
 2. **Witnessed integrity.** Make the log expensive to rewrite even for the person
    who owns the machine it runs on. (Slices R1.3–R1.5, built; see the exact claim
    below.)
@@ -62,6 +62,7 @@ detects:**
 | Re-anchoring old events today | attested `genTime`, 1-hour window |
 | Swapping in another authority's timestamp | `--tsa` pinning |
 | A `PATH` shim standing in for openssl | openssl resolved to an absolute path |
+| Events dated after the token attesting to them | `event_after_anchor`, 60s tolerance |
 
 **It does not prove:**
 
@@ -73,7 +74,8 @@ detects:**
   deletion: truncating the trailing events together with the checkpoints covering
   them leaves a valid prefix, indistinguishable from a log that ended earlier.
   With no witness `verify` returns exit 2, never 0, and says why. Register one
-  with `orisan-rec witness register` — see `~/Orisan/orisan-witness`.
+  with `orisan-rec witness register` — see
+  [Orisan-org/orisan-witness](https://github.com/Orisan-org/orisan-witness).
 - **Anything about a witness the operator can rewrite.** A witness inside the log
   directory is reported and not counted.
 - **That the timestamp is genuine.** We never verify our own time proof. `verify`
@@ -89,7 +91,7 @@ detects:**
                       a broken checkpoint chain, or a witness disagreement
     2  cannot-verify  a check could not be completed — NEVER a pass
 
-Exit 2 is the code competitors get wrong. "I could not check" is not "it is fine".
+Exit 2 is the distinction that matters. "I could not check" is not "it is fine".
 No witness, no anchor, no public key, no TSA CA, an unresolvable openssl, or a
 corrupt file all yield 2. Reaching 0 requires every check to have actually run.
 
@@ -142,9 +144,20 @@ Four rules, all enforced by `verify`:
 4. **The chain stays walkable.** The manifest records the boundary hashes, so
    the event after a gap still links to what preceded it.
 
-Measured on a real 20,000-event log with four anchored checkpoints: 21 MB to
-11 MB, 15,000 events removed, every checkpoint and anchor retained, and verify
-reports `pruned: 15000` with no tampered finding.
+Measured on a 20,000-event log with four anchored checkpoints: 20.6 MB to
+12.2 MB, 15,000 events removed, all four checkpoints and all four `.tsr`
+anchors retained, and verify reports `pruned: 15000` with no tampered finding.
+Reproduce it:
+
+    for i in 1 2 3 4; do
+      orisan-rec demo <dir> --events 5000
+      orisan-rec checkpoint <dir> && orisan-rec anchor <dir>
+    done
+    du -sh <dir>                          # 20.6 MB
+    orisan-rec prune <dir> --keep-last 1  # keeps the newest checkpoint
+    du -sh <dir>                          # 12.2 MB
+
+`--keep-last` counts **checkpoints**, not events.
 
 Remove the same bytes without the record and it is tampering, which is the
 point:
@@ -185,7 +198,8 @@ non-zero rather than reaching a reassuring ending.
 
 **Today, from a checkout** — this is the path that works right now:
 
-    git clone <repo> && cd orisan-recorder
+    git clone https://github.com/Orisan-org/orisan-recorder.git
+    cd orisan-recorder
     npm install && npm run build
     node dist/cli.js start
 
@@ -198,9 +212,14 @@ make until both are true.
     curl -fsSL https://orisan.org/install.sh | sh    # not live yet
 
 Either path needs Node 20+ and nothing else — no key, no account, no config
-file. It installs into `~/.orisan/app` (never globally, never `sudo`), creates
-your keys outside the log folder, writes a short clearly-labelled example
-session so the first screen has something in it, and opens the interface.
+file. The installer script places the app in `~/.orisan/app` (never globally,
+never `sudo`); from a checkout you run it where it sits. Either way `start`
+creates your keys in `~/.orisan/keys`, outside the log folder, writes a short
+clearly-labelled example session so the first screen has something in it, and
+opens the interface.
+
+From a checkout, `orisan-rec` below is `node dist/cli.js`; `npm link` puts the
+real name on your `PATH` if you would rather type it.
 
 Then it tells you what is still missing and what each piece would buy. The
 banner stays **grey** until a witness is registered — that is not a warning, it
@@ -215,11 +234,6 @@ rather than implying more than it can show.
     orisan-rec witness register <dir> --url <witness>
     orisan-rec witness repoint <dir> --url <new>   # move to a new hostname
     orisan-rec verify <dir> --tsa-ca ca.pem
-
-### From a checkout
-
-    npm install && npm run build
-    node dist/cli.js start
 
 ## The local UI
 
@@ -329,8 +343,9 @@ the list of what was wrong is more useful than a claim that nothing is.
     npm run typecheck
     npm test
 
-Node 20+. No GNU-only flags: a competitor shipped a macOS-dead feature by calling
-`ps --no-headers` inside a bare `except: pass`, and the tests are cross-platform
-for that reason. The TSA fixture in `test/fixtures/` runs a real local timestamp
-authority so CI exercises the success path offline — the absence of that is why
-five criticals shipped unnoticed.
+Node 20+. No GNU-only flags — a process probe written against GNU `ps` fails on
+macOS, and swallowing that failure makes "no servers found" and "we could not
+look" identical, so the tests run on both platforms. The TSA fixture in
+`test/fixtures/` runs a real local timestamp authority so CI exercises the
+success path offline; SECURITY-REVIEW-R1 records five criticals that shipped
+because that path was never exercised.
