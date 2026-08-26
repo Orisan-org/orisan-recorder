@@ -1,0 +1,76 @@
+# Every attack in SECURITY-REVIEW-R1.md runs here, on every push and every
+# pull request, on Linux and macOS. The README says so; this is what makes
+# that true rather than aspirational.
+#
+# The attack tests need no network and no sibling repository: they build a
+# tampered log on disk and assert `verify` catches it. `openssl` does the
+# timestamp checking and is present on both runner images.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A second push to the same branch cancels the first: CI that lags behind the
+# branch is CI nobody waits for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # The README says Node 20+. Both ends of that are tested, or the
+        # claim covers a version nothing runs.
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Full suite
+        run: npm test
+
+      # The suite passing is not the same as the attack tests having RUN.
+      # A skipped suite still leaves a green tick, and "runs in CI
+      # permanently" is a claim about execution, not about exit codes. This
+      # step fails if any confirmed attack was skipped or vanished.
+      - name: The attacks actually ran
+        run: node scripts/assert-attacks-ran.mjs
+
+  # Reported separately so a reader of the Actions tab sees the answer to
+  # "are the attack tests really running" without opening a log.
+  attacks:
+    name: confirmed attacks (SECURITY-REVIEW-R1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: C1-C7
+        run: npx vitest run test/attacks.test.ts test/attacker.test.ts test/hardening.test.ts
+      - name: Assert none were skipped
+        run: node scripts/assert-attacks-ran.mjs

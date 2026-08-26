@@ -1,5 +1,7 @@
 # orisan-recorder
 
+[![CI](https://github.com/rakeshb114/orisan-recorder/actions/workflows/ci.yml/badge.svg)](https://github.com/rakeshb114/orisan-recorder/actions/workflows/ci.yml)
+
 A recorder for AI agent actions.
 
 Two properties are the point of this project, in order:
@@ -16,8 +18,22 @@ Two properties are the point of this project, in order:
 ## What `verify` proves, and what it does not
 
 This section is the contract. No sentence here is stronger than a test in
-`test/attacks.test.ts`, and every attack listed in `SECURITY-REVIEW-R1.md` runs in
-CI permanently.
+`test/attacks.test.ts`, and every confirmed attack in `SECURITY-REVIEW-R1.md`
+(C1 to C7) runs in CI on every push and every pull request, on Linux and macOS,
+on Node 20 and 22 — see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+A green suite would not establish that on its own: a skipped test is green, a
+renamed one is green, and a deleted one is greenest. So CI also runs
+[`scripts/assert-attacks-ran.mjs`](scripts/assert-attacks-ran.mjs), which fails
+if any of C1-C7 was skipped, renamed or removed, and fails if the review
+documents an attack that is not wired to a test at all. The claim is about
+execution, so it is checked on execution.
+
+The witness suites (W1 to W5, in `test/witness-attacks.test.ts`) are a separate
+set and are **not** part of that claim. They need the `orisan-witness` service
+from a sibling repository, so they skip in CI and in any clone without it. When
+they skip they are reported as skipped, never as passed, and the run prints
+which checks did not happen and what they cover.
 
 **With a witness held outside the operator's control, and a pinned TSA, `verify`
 detects:**
