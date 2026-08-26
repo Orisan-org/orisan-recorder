@@ -239,6 +239,19 @@ export const ANCHOR_FRESHNESS_MS = 60 * 60 * 1000;
  * be right — ours and the TSA's — which NTP holds well inside a minute. Sixty seconds
  * is generous for that and useless for anything else: the shortest backdating worth
  * doing is longer than a minute.
+ *
+ * COVERAGE, STATED BECAUSE AN ABSENCE CLAIM WITHOUT ONE IS READ AS UNCONDITIONAL.
+ * `event_after_anchor` is reachable ONLY for a checkpoint carrying an RFC 3161 token
+ * whose signature has already verified, because the finding is a disagreement between
+ * two clocks and an unanchored checkpoint supplies only one of them. A future-dated
+ * UNANCHORED checkpoint is therefore not caught by this check.
+ *
+ * That is acceptable, and only because of where it lands instead: such a checkpoint
+ * already raises `checkpoint_unanchored / cannot_verify`, so it does not come back
+ * clean. "Not caught by this check" and "reported as fine" are different outcomes, and
+ * the second one is the one that would matter. Do not paraphrase this as "the verifier
+ * catches future-dating" — it catches future-dating against an outside time source, and
+ * says so.
  */
 export const EVENT_AHEAD_TOLERANCE_MS = 60 * 1000;
 
