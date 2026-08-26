@@ -19,7 +19,15 @@ import {
   type WitnessConfig,
 } from '../src/witness-service.js';
 import { startLocalTsa, type LocalTsa } from './fixtures/tsa-fixture.js';
-import { startWitness, type LiveWitness } from './fixtures/witness-fixture.js';
+import { startWitness, witnessAvailable, type LiveWitness } from './fixtures/witness-fixture.js';
+
+/**
+ * These suites need the real witness service from the sibling repository.
+ * Absent it they SKIP — reported as skipped by vitest and named in the banner
+ * from test/setup.ts. A skip is never a pass.
+ */
+const witnessSuite = witnessAvailable ? describe : describe.skip;
+
 
 let tsa: LocalTsa;
 let home: LiveWitness;      // where the log is registered
@@ -63,7 +71,7 @@ const pinnedUrl = () => readWitnessConfig(dir)!.url;
 
 // ---------------------------------------------------------------------------
 
-describe('ATTACK: repoint to an impostor with a different key', () => {
+witnessSuite('ATTACK: repoint to an impostor with a different key', () => {
   it('refuses, and says a different key means a different witness', async () => {
     await witnessedLog();
     // A real, working witness — holding this exact log, with every checkpoint —
@@ -91,7 +99,7 @@ describe('ATTACK: repoint to an impostor with a different key', () => {
   });
 });
 
-describe('ATTACK: repoint to a witness that has never seen this log', () => {
+witnessSuite('ATTACK: repoint to a witness that has never seen this log', () => {
   it('refuses rather than starting fresh somewhere with no memory', async () => {
     await witnessedLog();
     // elsewhere is running, but knows nothing about this log id.
@@ -106,7 +114,7 @@ describe('ATTACK: repoint to a witness that has never seen this log', () => {
   });
 });
 
-describe('other refusals', () => {
+witnessSuite('other refusals', () => {
   it('refuses a witness that is behind, naming what would be lost', async () => {
     await witnessedLog(10, 5);   // two checkpoints
     const key = loadSigningKey(dir, keyPath);
@@ -179,7 +187,7 @@ describe('other refusals', () => {
   });
 });
 
-describe('the legitimate move', () => {
+witnessSuite('the legitimate move', () => {
   it('accepts the same witness answering at a new address, keeping the key', async () => {
     await witnessedLog();
     const pinnedBefore = readWitnessConfig(dir)!.witness_pubkey_pem;
@@ -209,7 +217,7 @@ describe('the legitimate move', () => {
   });
 });
 
-describe('expectedWitnessState reads receipts, not intentions', () => {
+witnessSuite('expectedWitnessState reads receipts, not intentions', () => {
   it('reflects what the witness confirmed, not what we tried to send', async () => {
     await witnessedLog(10, 5);
     const cps = readCheckpoints(dir);

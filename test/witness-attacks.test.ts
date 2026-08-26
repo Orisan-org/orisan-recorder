@@ -23,7 +23,15 @@ import {
 } from '../src/witness-service.js';
 import { EXIT_CANNOT_VERIFY, EXIT_CLEAN, EXIT_TAMPERED, verify, type WitnessServiceInput } from '../src/verify.js';
 import { startLocalTsa, type LocalTsa } from './fixtures/tsa-fixture.js';
-import { startWitness, type LiveWitness } from './fixtures/witness-fixture.js';
+import { startWitness, witnessAvailable, type LiveWitness } from './fixtures/witness-fixture.js';
+
+/**
+ * These suites need the real witness service from the sibling repository.
+ * Absent it they SKIP — reported as skipped by vitest and named in the banner
+ * from test/setup.ts. A skip is never a pass.
+ */
+const witnessSuite = witnessAvailable ? describe : describe.skip;
+
 
 let tsa: LocalTsa;
 let wit: LiveWitness;
@@ -82,7 +90,7 @@ const run = async (over?: Partial<WitnessServiceInput>, f?: FetchLike) =>
 
 // ---------------------------------------------------------------------------
 
-describe('the truthful clean', () => {
+witnessSuite('the truthful clean', () => {
   it('an honest, anchored, witnessed log is CLEAN at exit 0', async () => {
     await honestLog();
     // The fixture witness necessarily runs on loopback, which verify now
@@ -99,7 +107,7 @@ describe('the truthful clean', () => {
   });
 });
 
-describe('W1: local truncation', () => {
+witnessSuite('W1: local truncation', () => {
   it('THE A1 KILL: deleting events + checkpoint + anchors is caught, naming the missing index', async () => {
     await honestLog();
     // The full R1 A1 attack: remove the tail everywhere locally.
@@ -119,7 +127,7 @@ describe('W1: local truncation', () => {
   });
 });
 
-describe('W2: re-seal from genesis and try to re-register', () => {
+witnessSuite('W2: re-seal from genesis and try to re-register', () => {
   it('the witness refuses the fork with 409 and verify reports fork_detected', async () => {
     await honestLog(20, 10);
     const key = loadSigningKey(dir, keyPath);
@@ -159,7 +167,7 @@ describe('W2: re-seal from genesis and try to re-register', () => {
   });
 });
 
-describe('W3: a substituted witness', () => {
+witnessSuite('W3: a substituted witness', () => {
   it('a different key on the head is an attack, not a gap', async () => {
     await honestLog(10, 10);
     // Same shape of response, signed by somebody else entirely.
@@ -220,7 +228,7 @@ describe('W3: a substituted witness', () => {
   });
 });
 
-describe('W4: the witness is offline', () => {
+witnessSuite('W4: the witness is offline', () => {
   it('exit 2, never 0, and never an accusation', async () => {
     await honestLog(10, 10);
     const dead: FetchLike = async () => { throw new Error('ECONNREFUSED'); };
@@ -234,7 +242,7 @@ describe('W4: the witness is offline', () => {
   });
 });
 
-describe('W5: a forged head', () => {
+witnessSuite('W5: a forged head', () => {
   it('a valid-looking head with a bad signature is exit 1', async () => {
     await honestLog(10, 10);
     const r = await run({ signatureValid: false });
@@ -259,7 +267,7 @@ describe('W5: a forged head', () => {
   });
 });
 
-describe('unwitnessed checkpoints are a gap, not an accusation', () => {
+witnessSuite('unwitnessed checkpoints are a gap, not an accusation', () => {
   it('a local checkpoint never submitted is cannot_verify', async () => {
     await honestLog(10, 10);
     const key = loadSigningKey(dir, keyPath);
@@ -280,7 +288,7 @@ describe('unwitnessed checkpoints are a gap, not an accusation', () => {
   });
 });
 
-describe('the five R1 attacks, re-run with a witness configured', () => {
+witnessSuite('the five R1 attacks, re-run with a witness configured', () => {
   it('A1 tail truncation', async () => {
     await honestLog();
     const evs = readFileSync(join(dir, segmentName(0)), 'utf8').trim().split('\n');
@@ -341,7 +349,7 @@ describe('the five R1 attacks, re-run with a witness configured', () => {
   });
 });
 
-describe('a witness on the same machine is not external memory', () => {
+witnessSuite('a witness on the same machine is not external memory', () => {
   it('agreement with a loopback witness does not reach green', async () => {
     await honestLog(10, 10);
     const r = await run();

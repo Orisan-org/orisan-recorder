@@ -28,7 +28,15 @@ import {
   retryDelayMs, submitCheckpoint, readWitnessConfig,
   type FetchLike, type WitnessConfig,
 } from '../src/witness-service.js';
-import { startWitness, type LiveWitness } from './fixtures/witness-fixture.js';
+import { startWitness, witnessAvailable, type LiveWitness } from './fixtures/witness-fixture.js';
+
+/**
+ * These suites need the real witness service from the sibling repository.
+ * Absent it they SKIP — reported as skipped by vitest and named in the banner
+ * from test/setup.ts. A skip is never a pass.
+ */
+const witnessSuite = witnessAvailable ? describe : describe.skip;
+
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'orisan-429-')); });
@@ -211,7 +219,7 @@ describe('a throttled submission, against a scripted witness', () => {
   });
 });
 
-describe('a retryable status then success, against a real witness over HTTP', () => {
+witnessSuite('a retryable status then success, against a real witness over HTTP', () => {
   let witness: LiveWitness;
   let proxy: Server;
   let proxyUrl: string;

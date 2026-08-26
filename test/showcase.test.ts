@@ -17,7 +17,15 @@ import { join } from 'node:path';
 
 import { runShowcase, type ShowcaseResult } from '../src/showcase.js';
 import { startLocalTsa, startLocalTsaHttp, type LocalTsa, type LocalTsaServer } from './fixtures/tsa-fixture.js';
-import { startWitness, type LiveWitness } from './fixtures/witness-fixture.js';
+import { startWitness, witnessAvailable, type LiveWitness } from './fixtures/witness-fixture.js';
+
+/**
+ * These suites need the real witness service from the sibling repository.
+ * Absent it they SKIP — reported as skipped by vitest and named in the banner
+ * from test/setup.ts. A skip is never a pass.
+ */
+const witnessSuite = witnessAvailable ? describe : describe.skip;
+
 
 let tsa: LocalTsa;
 let tsaHttp: LocalTsaServer;
@@ -55,7 +63,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('the run succeeds end to end', () => {
+witnessSuite('the run succeeds end to end', () => {
   it('every step behaved as the script asserts', () => {
     expect(result.failures, result.failures.join('; ')).toEqual([]);
     expect(result.ok).toBe(true);
@@ -68,7 +76,7 @@ describe('the run succeeds end to end', () => {
   });
 });
 
-describe('the three lines the demo exists for', () => {
+witnessSuite('the three lines the demo exists for', () => {
   it('step 5: refuses CLEAN here, because the test witness is on this machine', () => {
     // The fixture witness necessarily runs on loopback, and verify will not
     // count a witness the operator could delete. So the offline run asserts
@@ -95,7 +103,7 @@ describe('the three lines the demo exists for', () => {
   });
 });
 
-describe('the truncation leaves a plausible log, not an empty one', () => {
+witnessSuite('the truncation leaves a plausible log, not an empty one', () => {
   it('deletes only the last batch', () => {
     // With one checkpoint, "delete the tail" removes everything, and an empty
     // log is obviously wrong — it would demonstrate nothing.
@@ -111,7 +119,7 @@ describe('the truncation leaves a plausible log, not an empty one', () => {
   });
 });
 
-describe('it does not overclaim', () => {
+witnessSuite('it does not overclaim', () => {
   it('labels the recorded session as fabricated', () => {
     expect(transcript).toMatch(/fabricated session, labelled as such/i);
     expect(transcript).toMatch(/no real agent is being driven/i);
@@ -126,7 +134,7 @@ describe('it does not overclaim', () => {
   });
 });
 
-describe('a failing step fails the run', () => {
+witnessSuite('a failing step fails the run', () => {
   it('reports SHOWCASE FAILED and a non-zero result when a step misbehaves', async () => {
     // Point at a witness that is not there. Registration fails, and the run
     // must say so rather than continuing to a reassuring ending.
@@ -153,7 +161,7 @@ describe('a failing step fails the run', () => {
   }, 240_000);
 });
 
-describe('it cleans up after itself', () => {
+witnessSuite('it cleans up after itself', () => {
   it('leaves no signing key behind in a temp directory', () => {
     const strays = existsSync(tmpdir())
       ? require('node:fs').readdirSync(tmpdir()).filter((f: string) => f.startsWith('orisan-showcase-key-'))
