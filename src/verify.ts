@@ -226,6 +226,22 @@ function stripHash(e: RecordedEvent): Omit<RecordedEvent, 'hash'> {
  */
 export const ANCHOR_FRESHNESS_MS = 60 * 60 * 1000;
 
+/**
+ * How far ahead of its own anchor an event may be dated before we call it a lie.
+ *
+ * The hour above exists for DELIVERY LATENCY: batching, a slow network, a queued
+ * checkpoint all make an anchor arrive later than the actions it covers, and none of
+ * them is suspicious on its own. None of that applies in this direction. A timestamp
+ * authority cannot attest to something that has not happened, so an event dated after
+ * the token covering it is not a suspicious pattern, it is an impossible one.
+ *
+ * The only innocent cause is disagreement between two clocks that are both trying to
+ * be right — ours and the TSA's — which NTP holds well inside a minute. Sixty seconds
+ * is generous for that and useless for anything else: the shortest backdating worth
+ * doing is longer than a minute.
+ */
+export const EVENT_AHEAD_TOLERANCE_MS = 60 * 1000;
+
 export const EXIT_CLEAN = 0;
 export const EXIT_TAMPERED = 1;
 export const EXIT_CANNOT_VERIFY = 2;
@@ -668,6 +684,21 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
               `${Math.round(skewMs / 60000)} minutes later (limit ` +
               `${Math.round(ANCHOR_FRESHNESS_MS / 60000)}); the anchor attests to a re-anchoring, ` +
               'not to when the events happened',
+          });
+          continue;
+        }
+        if (skewMs < -EVENT_AHEAD_TOLERANCE_MS) {
+          findings.push({
+            severity: 'tampered',
+            code: 'event_after_anchor',
+            checkpoint_seq_to: cp.seq_to,
+            message:
+              `checkpoint ${cp.seq_from}..${cp.seq_to} was timestamped ` +
+              `${attested.toISOString()} but covers events dated up to ` +
+              `${newestEventTs.toISOString()}, ${Math.round(-skewMs / 1000)}s ` +
+              `later (tolerance ${Math.round(EVENT_AHEAD_TOLERANCE_MS / 1000)}s); an ` +
+              'authority cannot attest to what has not happened, so the recorded times ' +
+              'are wrong however they got that way',
           });
           continue;
         }
