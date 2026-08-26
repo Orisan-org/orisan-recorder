@@ -271,9 +271,19 @@ The event itself holds only non-secret facts: provider, model, message and tool
 counts, stop reason, tool names, token usage, duration, a digest over the
 canonical request, and the `payload_ref`.
 
-**Measured overhead** on an 80KB context against a local upstream, 300 calls:
-median **+1.29ms** buffered, **+1.25ms** streaming (p95 +1.7ms / +2.0ms). Against
-a real provider that is well inside the noise.
+**Measured overhead** on an 80KB context against a local upstream, 300 calls
+per arm after 30 warmup calls: median **+1.2ms** buffered, **+1.2ms** streaming;
+p95 +1.7ms and +2.1ms, taking the worst of three runs. Against a real provider
+that is well inside the noise.
+
+Reproduce it — the harness is in the repo, so the number is checkable rather
+than quoted:
+
+    npm run build && npm run bench:tap
+
+It times the same request straight at a local upstream and then through the tap,
+and reports the difference. Expect a higher first run: these figures are from a
+warm, otherwise-idle machine, and a loaded one measured over 3ms.
 
 ## Attach / detach
 

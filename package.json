@@ -18,7 +18,8 @@
     "ui": "tsx src/cli.ts ui",
     "pretest": "npm run build:ui",
     "prepack": "npm run build",
-    "start": "node dist/cli.js start"
+    "start": "node dist/cli.js start",
+    "bench:tap": "node scripts/bench-tap.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
