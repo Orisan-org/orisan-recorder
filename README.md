@@ -29,11 +29,20 @@ if any of C1-C7 was skipped, renamed or removed, and fails if the review
 documents an attack that is not wired to a test at all. The claim is about
 execution, so it is checked on execution.
 
-The witness suites (W1 to W5, in `test/witness-attacks.test.ts`) are a separate
-set and are **not** part of that claim. They need the `orisan-witness` service
-from a sibling repository, so they skip in CI and in any clone without it. When
-they skip they are reported as skipped, never as passed, and the run prints
-which checks did not happen and what they cover.
+The witness suites (W1 to W5, in `test/witness-attacks.test.ts`) need the
+`orisan-witness` service, which CI checks out from
+[Orisan-org/orisan-witness](https://github.com/Orisan-org/orisan-witness) on
+every run, so they run on every push and pull request too. They get the same
+execution check as the attacks:
+[`scripts/assert-witness-ran.mjs`](scripts/assert-witness-ran.mjs) fails the
+build if any of W1 to W5 was skipped, renamed or removed — and a skip is
+precisely what happens if the service is unreachable, so an unreachable witness
+breaks the build rather than passing quietly.
+
+In a local clone without the service they still skip, and a skip is reported as
+a skip, never as a pass: the run prints which checks did not happen and what
+they cover. Point `ORISAN_WITNESS_SRC` at a checkout of the service, or place
+one alongside this repo, to run them.
 
 **With a witness held outside the operator's control, and a pinned TSA, `verify`
 detects:**

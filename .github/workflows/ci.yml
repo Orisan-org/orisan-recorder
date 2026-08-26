@@ -22,8 +22,6 @@ jobs:
   test:
     name: ${{ matrix.os }} · node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    env:
-      HAS_WITNESS_KEY: ${{ secrets.WITNESS_DEPLOY_KEY != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -35,21 +33,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The witness service lives in a separate PRIVATE repository, so a
-      # runner needs a credential to read it. GITHUB_TOKEN is scoped to this
-      # repo alone and cannot. With WITNESS_DEPLOY_KEY present, W1-W5 run;
-      # without it they skip and say so. The job does not fail either way —
-      # a fork, or a run before the key exists, still gets the other 470-odd
-      # tests and all seven confirmed attacks.
-      - name: Check out the witness service (optional)
-        id: witness
-        if: env.HAS_WITNESS_KEY == 'true'
-        continue-on-error: true
+      # orisan-witness is public, so the repo-scoped GITHUB_TOKEN reads it with
+      # no extra credential. This step is REQUIRED: if the service cannot be
+      # checked out, W1-W5 cannot run, and a run in which they did not run must
+      # not be green. That is the whole change from the old arrangement, where a
+      # missing deploy key turned them into a silent skip.
+      - name: Check out the witness service
         uses: actions/checkout@v4
         with:
           repository: Orisan-org/orisan-witness
           path: .witness
-          ssh-key: ${{ secrets.WITNESS_DEPLOY_KEY }}
 
       - uses: actions/setup-node@v4
         with:
@@ -60,7 +53,6 @@ jobs:
         run: npm ci
 
       - name: Install the witness service
-        if: steps.witness.outcome == 'success'
         run: npm ci --prefix .witness
 
       - name: Typecheck
@@ -72,24 +64,16 @@ jobs:
       - name: Full suite
         run: npm test
         env:
-          # Empty when the witness was not checked out, which the fixture
-          # reads as "not available" and the suites report as skipped.
-          ORISAN_WITNESS_SRC: ${{ steps.witness.outcome == 'success' && format('{0}/.witness/src', github.workspace) || '' }}
+          ORISAN_WITNESS_SRC: ${{ github.workspace }}/.witness/src
 
-      # Say, in the run summary, whether the witness suites actually ran.
-      # A skipped suite is invisible in a green tick, and these are the ones
-      # that cover truncation, fork and rug-pull detection.
-      - name: Report whether W1-W5 ran
-        if: always()
-        run: |
-          if [ "${{ steps.witness.outcome }}" = "success" ]; then
-            echo "W1-W5 RAN: the witness service was checked out." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "W1-W5 SKIPPED: no witness service available to this run." >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "They are reported as skipped, never as passed. C1-C7, the confirmed" >> "$GITHUB_STEP_SUMMARY"
-            echo "attacks in SECURITY-REVIEW-R1.md, need no witness and did run." >> "$GITHUB_STEP_SUMMARY"
-          fi
+      # A green suite does not establish that W1-W5 ran: describe.skip is green.
+      # This fails the build if any of them was skipped, renamed or deleted, and
+      # a skip is exactly what happens when no witness is reachable. Same guard
+      # the confirmed attacks get, for the same reason.
+      - name: W1-W5 actually ran
+        run: node scripts/assert-witness-ran.mjs
+        env:
+          ORISAN_WITNESS_SRC: ${{ github.workspace }}/.witness/src
 
       # The suite passing is not the same as the attack tests having RUN.
       # A skipped suite still leaves a green tick, and "runs in CI

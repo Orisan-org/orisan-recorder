@@ -6,3 +6,6 @@ dist/
 .orisan-scratch/
 ui/node_modules/
 ui/dist/
+
+# CI checks the witness service out here to run W1-W5.
+.witness/
