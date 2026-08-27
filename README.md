@@ -74,8 +74,11 @@ detects:**
   deletion: truncating the trailing events together with the checkpoints covering
   them leaves a valid prefix, indistinguishable from a log that ended earlier.
   With no witness `verify` returns exit 2, never 0, and says why. Register one
-  with `orisan-rec witness register` — see
-  [Orisan-org/orisan-witness](https://github.com/Orisan-org/orisan-witness).
+  with `orisan-rec witness register <dir>`, which registers with
+  `https://witness.orisan.org` unless you pass `--url`. See
+  [Whose witness](#whose-witness) for what that means, and
+  [Orisan-org/orisan-witness](https://github.com/Orisan-org/orisan-witness) for
+  the service.
 - **Anything about a witness the operator can rewrite.** A witness inside the log
   directory is reported and not counted.
 - **That the timestamp is genuine.** We never verify our own time proof. `verify`
@@ -173,13 +176,37 @@ It is a decision to keep the proof and drop the detail, taken on the record.
 Three things must live somewhere the recorder's operator cannot silently rewrite,
 or the guarantees above degrade to "no careless tampering found":
 
-- **the witness** (`orisan-rec witness register --url …`) — the only defence
+- **the witness** (`orisan-rec witness register <dir>`) — the only defence
   against tail truncation. Its key is pinned at registration and never
   re-learned; a response signed by another key fails hard as an attack.
   A local `--witness <file>` is the weaker, self-hosted form.
 - **the signing key** (`--key`, default `~/.orisan/signing.key`) — a key beside the
   data lets whoever rewrites the log re-sign it; `verify` reports it if it finds one
 - **the TSA** (`--tsa`) — an operator-chosen authority proves nothing
+
+## Whose witness
+
+`orisan-rec witness register <dir>` uses **`https://witness.orisan.org`** when
+you do not pass `--url`. That service is **run by Orisan**, and being explicit
+about what that buys you matters more than the convenience:
+
+- **It does defend you against whoever holds the machine the log is on** —
+  including you. That is the threat the witness exists for: deleting trailing
+  events together with the checkpoints covering them leaves a valid prefix, and
+  only a record kept elsewhere can contradict it.
+- **It does not defend you against Orisan.** A witness is worth exactly what its
+  independence from the party under scrutiny is worth. If the party under
+  scrutiny is us, ours proves nothing.
+
+So if your auditor has to discount Orisan as well, run your own — the service is
+[Orisan-org/orisan-witness](https://github.com/Orisan-org/orisan-witness), it is
+one binary and a SQLite file, and `--url` takes any hostname. The witness public
+key is pinned at registration and never re-learned whichever one you choose, so
+substituting a different witness later fails as an attack rather than silently
+succeeding.
+
+A witness inside the log directory is reported and not counted, for the same
+reason: the operator can rewrite it.
 
 ## See it work
 
@@ -231,7 +258,7 @@ rather than implying more than it can show.
     orisan-rec attach <cfg> --log <dir>   # record one; detach restores it byte-identically
     orisan-rec tap <dir> --upstream https://api.anthropic.com --payload-key <p>
     orisan-rec checkpoint <dir> && orisan-rec anchor <dir>
-    orisan-rec witness register <dir> --url <witness>
+    orisan-rec witness register <dir>             # https://witness.orisan.org
     orisan-rec witness repoint <dir> --url <new>   # move to a new hostname
     orisan-rec verify <dir> --tsa-ca ca.pem
 

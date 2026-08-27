@@ -20,6 +20,18 @@ import { canonicalJson } from './schema.js';
 import type { SignedCheckpoint, SigningKeyFile } from './checkpoint.js';
 import { sign as signWithKey } from './checkpoint-sign.js';
 
+/**
+ * The witness this project runs, used when none is named.
+ *
+ * It is operated by Orisan. That is the point and also the limit: a witness is
+ * only worth what its independence from the log's operator is worth, so ours
+ * defends you against someone rewriting a log on their own machine, and does
+ * NOT defend you against us. An auditor who needs to discount Orisan entirely
+ * should be pointed at a witness we do not run — `--url` takes any of them, and
+ * the key is pinned at registration whichever you choose.
+ */
+export const DEFAULT_WITNESS_URL = 'https://witness.orisan.org';
+
 export const WITNESS_CONFIG_FILENAME = 'witness.json';
 export const RECEIPTS_DIRNAME = 'receipts';
 

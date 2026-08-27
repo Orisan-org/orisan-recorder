@@ -26,7 +26,10 @@ const CARDS = [
     body:
       'It can only show what reached the recorder: an agent nobody connected leaves no trace here. And on its own '
       + 'it cannot prove nothing was deleted from the end of the log, because what is left still looks consistent. '
-      + 'Setting up a witness fixes that second one. The banner will always tell you which of these applies.',
+      + 'Setting up a witness fixes that second one: run `orisan-rec witness register <log dir>`, which uses '
+      + 'https://witness.orisan.org — a witness Orisan runs, so it defends against tampering by whoever holds '
+      + 'this machine, not against Orisan. Pass --url to use one we do not run. The banner on Timeline and '
+      + 'Evidence tells you which of these applies.',
   },
 ];
 

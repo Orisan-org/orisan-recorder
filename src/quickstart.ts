@@ -25,7 +25,7 @@ import { generateDemoSession } from './demo.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import { Recorder } from './recorder.js';
 import { EventStore } from './store.js';
-import { readWitnessConfig } from './witness-service.js';
+import { DEFAULT_WITNESS_URL, readWitnessConfig } from './witness-service.js';
 
 export interface OrisanHome {
   root: string;
@@ -90,8 +90,11 @@ export function setupSteps(home: OrisanHome): SetupStep[] {
       why:
         'Without one, nothing can tell whether records were deleted from the end of the log, because what is '
         + 'left still looks consistent. A witness keeps its own note outside this machine, so deletions here '
-        + 'show up as a disagreement. Until then the banner stays grey, which is honest rather than reassuring.',
-      command: `orisan-rec witness register ${home.logDir} --url <witness url>`,
+        + 'show up as a disagreement. Until then the banner stays grey, which is honest rather than reassuring. '
+        + `With no --url this registers with ${DEFAULT_WITNESS_URL}, which Orisan runs: it defends against `
+        + 'tampering by whoever holds this machine, not against Orisan. Pass --url to use a witness we do not '
+        + 'run; the witness key is pinned at registration either way.',
+      command: `orisan-rec witness register ${home.logDir}`,
       done: witness !== null,
     },
   ];

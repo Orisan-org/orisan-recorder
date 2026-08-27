@@ -26,6 +26,7 @@ import { defaultHome, prepareStart, setupSteps, startBanner } from './quickstart
 import { runShowcase } from './showcase.js';
 import { generateKeyFile, loadKeyFile } from './payloads.js';
 import {
+  DEFAULT_WITNESS_URL,
   DRAIN_RETRY, fetchHead, pendingSubmissions, readWitnessConfig, registerLog, repointWitness,
   submitCheckpoint, WitnessKeyMismatch,
 } from './witness-service.js';
@@ -52,7 +53,7 @@ function usage(): string {
     '                                            drop old events, keep the proof',
     '  orisan-rec checkpoint <dir> [--key <p>]   cut a checkpoint over uncovered events',
     '  orisan-rec anchor <dir> [--tsa <url>]     anchor any unanchored checkpoints',
-    '  orisan-rec witness register <dir> --url <witness>   register and PIN the witness key',
+    '  orisan-rec witness register <dir> [--url <witness>]  register and PIN the witness key',
     '  orisan-rec witness submit <dir>           submit any unwitnessed checkpoints',
     '  orisan-rec witness repoint <dir> --url <new>  move a log to a new witness hostname',
     '  orisan-rec verify <dir> [--tsa-ca <pem>] [--witness <file>] [--tsa <url>]',
@@ -263,7 +264,7 @@ const COMMAND_HELP: Record<string, string[]> = {
     '  --tsa <url>   timestamp authority (default ' + DEFAULT_TSA_URL + ')',
   ],
   witness: [
-    'orisan-rec witness register <dir> --url <witness>',
+    'orisan-rec witness register <dir> [--url <witness>]',
     'orisan-rec witness submit <dir>',
     'orisan-rec witness repoint <dir> --url <new>',
     '',
@@ -271,7 +272,10 @@ const COMMAND_HELP: Record<string, string[]> = {
     'this log contained, so deleting the end of the log shows up as a',
     'disagreement rather than as a shorter log.',
     '',
-    '  register   pin the witness public key and register this log',
+    `  register   pin the witness public key and register this log`,
+    `             --url defaults to ${DEFAULT_WITNESS_URL}, which Orisan runs.`,
+    '             It defends against tampering by whoever holds this machine,',
+    '             not against Orisan. Point --url at your own to discount us.',
     '  submit     send any checkpoints the witness has not seen',
     '  repoint    move a log to a new witness hostname, or refuse and say why',
   ],
@@ -484,8 +488,12 @@ async function main(argv: string[]): Promise<number> {
     if (!sub || !wdir) { process.stderr.write('usage: orisan-rec witness <register|submit> <dir> [--url <witness>]\n'); return 2; }
 
     if (sub === 'register') {
-      const url = flag(argv, '--url');
-      if (!url) { process.stderr.write('witness register requires --url\n'); return 2; }
+      // Defaulting is the difference between a step a reader can take and one
+      // they have to go looking for. Whose witness it is gets said out loud
+      // below rather than buried: a witness you do not control is the whole
+      // mechanism, so who runs it is the first thing an auditor will ask.
+      const url = flag(argv, '--url') ?? DEFAULT_WITNESS_URL;
+      const usingDefault = flag(argv, '--url') === undefined;
       const keyPath = flag(argv, '--key');
       try {
         // Registering is a reasonable FIRST action on a new log — you set the
@@ -500,7 +508,13 @@ async function main(argv: string[]): Promise<number> {
           `registered with ${cfg.url}\n` +
           `  log_id        ${cfg.log_id}\n` +
           `  witness key   PINNED (${cfg.witness_pubkey_pem.split('\n')[1]?.slice(0, 24) ?? ''}…)\n` +
-          '  this key is never re-learned; a response signed by any other key is treated as an attack\n',
+          '  this key is never re-learned; a response signed by any other key is treated as an attack\n' +
+          (usingDefault
+            ? '\n  This is the witness Orisan runs. It protects you against someone\n' +
+              '  rewriting this log on this machine; it does not protect you against\n' +
+              '  Orisan. If your auditor needs to discount us too, run your own and\n' +
+              '  pass --url — the key is pinned either way.\n'
+            : ''),
         );
         return 0;
       } catch (e) {

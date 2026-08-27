@@ -25,7 +25,9 @@ import { readCheckpoints } from './checkpoint.js';
 import { EventStore, listSegments } from './store.js';
 import { witnessIsLoopback } from './verify.js';
 
-export const DEFAULT_WITNESS_URL = 'https://witness.orisan.org';
+import { DEFAULT_WITNESS_URL } from './witness-service.js';
+
+export { DEFAULT_WITNESS_URL };
 export const DEFAULT_SHOWCASE_TSA_URL = 'https://freetsa.org/tsr';
 export const DEFAULT_TSA_CA_URL = 'https://freetsa.org/files/cacert.pem';
 
