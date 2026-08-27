@@ -32,12 +32,35 @@ import {
 } from './witness-service.js';
 import { generateSigningKey, loadSigningKey, signingKeyPath } from './checkpoint.js';
 
+/**
+ * Where this machine's signing key lives, when --key is not given.
+ *
+ * It must NOT default to inside the log directory. `start` creates the key in
+ * ~/.orisan/keys precisely because verify reports a key stored beside the data
+ * it signs — and a command that then created a SECOND key in the log directory
+ * produced a log signed by one key and checked against another, which surfaces
+ * as "This log has been altered" on a log nobody touched. That is the worst
+ * possible failure for this product: a false accusation.
+ *
+ * Order: an explicit --key wins; then the home key, which is what `start` made;
+ * then a key already sitting in the log directory, so logs created by older
+ * versions keep working; otherwise the home key path, to be created there.
+ */
+export function defaultSigningKey(dir: string, explicit?: string): string {
+  if (explicit !== undefined) return explicit;
+  const home = defaultHome().signingKey;
+  if (existsSync(home)) return home;
+  const beside = signingKeyPath(dir);
+  if (existsSync(beside)) return beside;
+  return home;
+}
+
 function usage(): string {
   return [
     'orisan-rec — recorder for AI agent actions',
     '',
     'Usage:',
-    '  orisan-rec start                          set everything up and open the interface',
+    '  orisan-rec start [--tsa-ca <pem>]         set everything up and open the interface',
     '  orisan-rec showcase [--pause ms] [--keep] run the whole demo, start to finish',
     '        [--scan-home <dir>]                 scan a fabricated root, for recordings',
     '  orisan-rec scan [--out <agents.json>]     find agents and MCP servers on this machine',
@@ -74,7 +97,7 @@ async function serveUi(dir: string, argv: string[]): Promise<number> {
     port,
     shimPath: runner.shimPath,
     nodePath: runner.nodePath,
-    ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+    signingKeyPath: defaultSigningKey(dir, flag(argv, '--key')),
     ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
     ...(flag(argv, '--tsa-ca') !== undefined ? { tsaCaFile: flag(argv, '--tsa-ca')! } : {}),
     // Without this the interface shows that context was captured and encrypted,
@@ -381,6 +404,16 @@ async function main(argv: string[]): Promise<number> {
     const r = prepareStart({ ...(argv.includes('--no-demo') ? { noDemo: true } : {}) });
     const portFlag = flag(argv, '--port');
     const runner = shimRunner();
+    // Without a TSA CA the verifier cannot check the timestamp, so it returns
+    // cannot-verify and the banner stays grey FOREVER — however much the user
+    // does. The whole interface is organised around "what would make this
+    // green", so a green that is unreachable from it is a promise the screen
+    // cannot keep. An explicit --tsa-ca wins; otherwise a CA sitting in the log
+    // directory is used, which is where `showcase` leaves one.
+    const tsaCa = flag(argv, '--tsa-ca')
+      ?? (existsSync(pathJoin(r.home.logDir, 'tsa-ca.pem'))
+        ? pathJoin(r.home.logDir, 'tsa-ca.pem')
+        : undefined);
     const { port } = await startServer({
       logDir: r.home.logDir,
       port: portFlag !== undefined ? Number.parseInt(portFlag, 10) : DEFAULT_PORT,
@@ -389,6 +422,7 @@ async function main(argv: string[]): Promise<number> {
       signingKeyPath: r.home.signingKey,
       payloadKeyPath: r.home.payloadKey,
       orisanHome: r.home.root,
+      ...(tsaCa !== undefined ? { tsaCaFile: tsaCa } : {}),
     });
     const url = `http://127.0.0.1:${port}`;
     process.stdout.write(startBanner(r, url));
@@ -449,7 +483,7 @@ async function main(argv: string[]): Promise<number> {
         logDir: log,
         shimPath: runner.shimPath,
         nodePath: runner.nodePath,
-        ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+        signingKeyPath: defaultSigningKey(log, flag(argv, '--key')),
         ...(flag(argv, '--witness') !== undefined ? { witnessFile: flag(argv, '--witness')! } : {}),
       });
       process.stdout.write(
@@ -500,9 +534,10 @@ async function main(argv: string[]): Promise<number> {
         // witness up before you record anything. The signing key does not
         // exist yet at that point, so create it rather than failing with
         // "signing key not found", which reads like a broken install.
-        const key = existsSync(signingKeyPath(wdir, keyPath))
-          ? loadSigningKey(wdir, keyPath)
-          : generateSigningKey(wdir, keyPath);
+        const resolved = defaultSigningKey(wdir, keyPath);
+        const key = existsSync(resolved)
+          ? loadSigningKey(wdir, resolved)
+          : generateSigningKey(wdir, resolved);
         const cfg = await registerLog(wdir, key, { url });
         process.stdout.write(
           `registered with ${cfg.url}\n` +
@@ -526,7 +561,7 @@ async function main(argv: string[]): Promise<number> {
     if (sub === 'submit') {
       const cfg = readWitnessConfig(wdir);
       if (!cfg) { process.stderr.write('no witness configured; run `orisan-rec witness register` first\n'); return 2; }
-      const key = loadSigningKey(wdir, flag(argv, '--key'));
+      const key = loadSigningKey(wdir, defaultSigningKey(wdir, flag(argv, '--key')));
       const pending = pendingSubmissions(wdir, readCheckpoints(wdir));
       if (pending.length === 0) { process.stdout.write('nothing pending: every checkpoint has a receipt\n'); return 0; }
 
@@ -696,7 +731,7 @@ async function main(argv: string[]): Promise<number> {
       }
 
       const recorder = Recorder.open(dir, {
-        ...(flag(argv, '--key') !== undefined ? { signingKeyPath: flag(argv, '--key')! } : {}),
+        signingKeyPath: defaultSigningKey(dir, flag(argv, '--key')),
         anchor: { enabled: false },
       });
       const portFlag = flag(argv, '--port');
@@ -754,10 +789,10 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case 'checkpoint': {
-      const keyPath = flag(argv, '--key');
+      const keyPath = defaultSigningKey(dir, flag(argv, '--key'));
       const rec = Recorder.open(dir, {
         anchor: { enabled: false },
-        ...(keyPath !== undefined ? { signingKeyPath: keyPath } : {}),
+        signingKeyPath: keyPath,
       });
       const cp = await rec.cutCheckpoint('manual');
       rec.close();
