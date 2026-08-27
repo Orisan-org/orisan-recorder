@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { plural } from './plural.js';
 import {
   api, type Banner, type EventDetail, type GlossaryEntry, type ScanResult,
   type ScreenCopy, type ScreenName, type SessionSummary, type Status, type UiEvent,
@@ -386,7 +387,7 @@ function Evidence({ status, copy, glossary }: {
       </p>
       {status && (
         <p className="sub">
-          {status.events} events · {status.checkpoints} checkpoints · {status.anchored} anchors accepted
+          {plural(status.events, 'event')} · {plural(status.checkpoints, 'checkpoint')} · {plural(status.anchored, 'anchor')} accepted
           {!status.witnessConfigured && ' · no witness configured'}
         </p>
       )}

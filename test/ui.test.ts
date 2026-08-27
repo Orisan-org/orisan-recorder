@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { FALSE_CONFIDENCE_STRINGS } from '../src/banner.js';
-import { buildEvidenceBundle, VERIFY_INSTRUCTIONS } from '../src/bundle.js';
+import { buildEvidenceBundle, verifyInstructions, VERIFY_INSTRUCTIONS } from '../src/bundle.js';
 import { makeZip } from '../src/zip.js';
 import { hostIsLoopback, startServer } from '../src/server.js';
 import { Recorder } from '../src/recorder.js';
@@ -127,6 +127,31 @@ describe('evidence bundle', () => {
     expect(VERIFY_INSTRUCTIONS).toMatch(/cannot tell you/i);
     expect(VERIFY_INSTRUCTIONS).toMatch(/witness/i);
     expect(VERIFY_INSTRUCTIONS).toMatch(/not a pass/);
+  });
+
+  it('the instructions describe only files the bundle actually contains', () => {
+    // The document used to be a constant, so it advertised anchors/*.tsr and a
+    // whole section on checking them even when the bundle had no anchors at
+    // all. An auditor following instructions to files that are not there stops
+    // trusting the instructions.
+    const bare = verifyInstructions({
+      segments: ['events-0000.jsonl'], checkpoints: false, publicKey: false, anchors: [], report: false,
+    });
+    expect(bare).not.toContain('anchors/*.tsr');
+    expect(bare).toMatch(/no anchors\/ directory/i);
+    expect(bare).toMatch(/Signatures: not checkable/i);
+    expect(bare).not.toContain('verify-report.json for what our own verifier');
+
+    const full = verifyInstructions({
+      segments: ['events-0000.jsonl'], checkpoints: true, publicKey: true,
+      anchors: ['00000017.tsr', '00000017.json'], report: true,
+    });
+    expect(full).toContain('anchors/*.tsr');
+    expect(full).toContain('one timestamp token');
+    expect(full).toMatch(/## 3\. Check the signatures/);
+
+    // The invariant belongs in every bundle, whatever it contains.
+    for (const doc of [bare, full]) expect(doc).toMatch(/not a pass/);
   });
 
   it('the instructions never claim the bundle is verified', () => {

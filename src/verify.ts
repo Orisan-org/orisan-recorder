@@ -802,13 +802,16 @@ function verifyInner(dir: string, opts: VerifyOptions = {}): VerifyReport {
     // during normal recording, before the cadence fires. Calling that
     // tampering would flag every live log and every `demo` run. It is still
     // never clean — those events are committed to by nothing.
-    findings.push({
-      severity: 'cannot_verify',
-      code: 'events_past_last_anchor',
-      message:
-        `${uncommitted} event(s) after seq ${lastAnchoredSeq} are covered by no anchored ` +
-        `checkpoint (log head is seq ${headSeq}); they are uncommitted`,
-    });
+    // lastAnchoredSeq is -1 when nothing is anchored at all. Printing "after
+    // seq -1" leaks a sentinel into a sentence a reader is meant to act on, and
+    // reads as a bug in the tool rather than a state of their log. The two
+    // cases are genuinely different things to say, so they are said differently.
+    const message = lastAnchoredSeq < 0
+      ? `no checkpoint in this log is anchored, so none of its ${uncommitted} event(s) `
+        + `are externally committed (log head is seq ${headSeq})`
+      : `${uncommitted} event(s) after seq ${lastAnchoredSeq} are covered by no anchored `
+        + `checkpoint (log head is seq ${headSeq}); they are uncommitted`;
+    findings.push({ severity: 'cannot_verify', code: 'events_past_last_anchor', message });
   } else if (lastAnchoredSeq > headSeq) {
     // A checkpoint commits to events that are no longer there at all.
     const culprit = anchoredCheckpoints.find((c) => c.seq_to === lastAnchoredSeq);

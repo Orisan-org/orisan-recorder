@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { plural } from './plural.js';
 import { api, type GlossaryEntry, type ProveResult, type ScreenCopy, type SetupStep } from './api.js';
 import { Annotated, ScreenHeader } from './Explain.js';
 
@@ -90,7 +91,7 @@ export function WhyTrust({ copy, glossary }: { copy: ScreenCopy; glossary: Gloss
       {result && (
         <>
           <p className="sub">
-            Ran against {result.events} recorded action(s) and {result.checkpoints} batch summaries.{' '}
+            Ran against {plural(result.events, 'recorded action')} and {plural(result.checkpoints, 'batch summary', 'batch summaries')}.{' '}
             {result.sourceUntouched
               ? 'Your log is byte-for-byte as it was before this ran.'
               : 'WARNING: the source log changed during this run — please report this.'}
