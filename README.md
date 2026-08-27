@@ -245,8 +245,19 @@ creates your keys in `~/.orisan/keys`, outside the log folder, writes a short
 clearly-labelled example session so the first screen has something in it, and
 opens the interface.
 
-From a checkout, `orisan-rec` below is `node dist/cli.js`; `npm link` puts the
-real name on your `PATH` if you would rather type it.
+From a checkout there is no `orisan-rec` on your `PATH` — the name arrives with
+the installer, which is not live yet. Either run the built entry point directly:
+
+    node dist/cli.js start
+
+or give yourself the short name for this shell, which needs no root and writes
+nothing outside it:
+
+    alias orisan-rec="node $PWD/dist/cli.js"
+
+Every `orisan-rec …` line below then works as written. The interface prints its
+own commands in whichever form you are actually running, so anything you copy
+from a screen runs as-is.
 
 Then it tells you what is still missing and what each piece would buy. The
 banner stays **grey** until a witness is registered — that is not a warning, it
@@ -260,7 +271,37 @@ rather than implying more than it can show.
     orisan-rec checkpoint <dir> && orisan-rec anchor <dir>
     orisan-rec witness register <dir>             # https://witness.orisan.org
     orisan-rec witness repoint <dir> --url <new>   # move to a new hostname
-    orisan-rec verify <dir> --tsa-ca ca.pem
+    orisan-rec verify <dir> --tsa-ca <tsa-ca.pem>   # see Checking a timestamp
+
+### Checking a timestamp: what `--tsa-ca` is
+
+`verify` does not check timestamp tokens itself. It shells out to
+`openssl ts -verify` and prints the exact command, so the check is done by
+software we did not write and you can re-run it by hand. openssl needs the
+**CA certificate of the timestamp authority that issued the token** to do that,
+and that is what `--tsa-ca` takes.
+
+Without it, `verify` reports the anchor as present but unproven and returns
+exit 2 — never 0. That is deliberate: an unchecked timestamp is not a checked
+one.
+
+Where to get the file:
+
+- **`showcase` writes one for you.** It downloads the FreeTSA CA to
+  `<log dir>/tsa-ca.pem` before verifying, so after a showcase run you already
+  have a working example at that path.
+- **For the default authority**, `https://freetsa.org/tsr`, the CA is published
+  at <https://freetsa.org/files/cacert.pem>:
+
+      curl -fsSL https://freetsa.org/files/cacert.pem -o tsa-ca.pem
+      orisan-rec verify <dir> --tsa-ca tsa-ca.pem
+
+- **For any other authority** you pointed `--tsa` at, it is that authority's own
+  CA certificate, published by them. Fetch it from them, not from us — a CA
+  handed to you by the party whose timestamps it validates is worth nothing.
+
+The anchor records which authority issued it, so a token is always checkable
+against a CA you obtained independently.
 
 ## The local UI
 

@@ -18,7 +18,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { generateSigningKey, loadSigningKey, readCheckpoints } from './checkpoint.js';
 import { generateDemoSession } from './demo.js';
@@ -26,6 +26,22 @@ import { generateKeyFile, loadKeyFile } from './payloads.js';
 import { Recorder } from './recorder.js';
 import { EventStore } from './store.js';
 import { DEFAULT_WITNESS_URL, readWitnessConfig } from './witness-service.js';
+
+/**
+ * How to invoke this CLI, as the reader would have to type it.
+ *
+ * Printing `orisan-rec …` to someone running from a checkout hands them a
+ * command that does not exist: the name is only on PATH after a global install,
+ * and today the checkout is the only install route that works. So the commands
+ * we offer are built from how THIS process was actually started, and a copied
+ * line runs as-is.
+ */
+export function cliInvocation(argv1: string | undefined = process.argv[1]): string {
+  if (!argv1) return 'orisan-rec';
+  // A global or linked install runs through a shim named for the command; a
+  // checkout runs the built entry point directly.
+  return /(^|[/\\])dist[/\\]cli\.js$/.test(argv1) ? `node ${resolve(argv1)}` : 'orisan-rec';
+}
 
 export interface OrisanHome {
   root: string;
@@ -62,6 +78,7 @@ export interface SetupStep {
  * "why isn't this green?" is in the same words in both places.
  */
 export function setupSteps(home: OrisanHome): SetupStep[] {
+  const cli = cliInvocation();
   const witness = existsSync(home.logDir) ? readWitnessConfig(home.logDir) : null;
   const hasCheckpoint = existsSync(home.logDir) && readCheckpoints(home.logDir).length > 0;
   const anchored = existsSync(join(home.logDir, 'anchors'));
@@ -70,19 +87,19 @@ export function setupSteps(home: OrisanHome): SetupStep[] {
     {
       label: 'Record something',
       why: 'Nothing is recorded until you switch it on for an agent, or run the demo.',
-      command: 'orisan-rec scan',
+      command: `${cli} scan`,
       done: existsSync(home.logDir) && EventStore.open(home.logDir, { readOnly: true }).store.count > 0,
     },
     {
       label: 'Summarise what has been recorded',
       why: 'Batches are signed as they are made, so a later edit stops matching.',
-      command: `orisan-rec checkpoint ${home.logDir}`,
+      command: `${cli} checkpoint ${home.logDir}`,
       done: hasCheckpoint,
     },
     {
       label: 'Get an outside timestamp',
       why: 'Proves a batch already existed by a certain time, checkable by anyone with openssl.',
-      command: `orisan-rec anchor ${home.logDir}`,
+      command: `${cli} anchor ${home.logDir}`,
       done: anchored,
     },
     {
@@ -94,7 +111,7 @@ export function setupSteps(home: OrisanHome): SetupStep[] {
         + `With no --url this registers with ${DEFAULT_WITNESS_URL}, which Orisan runs: it defends against `
         + 'tampering by whoever holds this machine, not against Orisan. Pass --url to use a witness we do not '
         + 'run; the witness key is pinned at registration either way.',
-      command: `orisan-rec witness register ${home.logDir}`,
+      command: `${cli} witness register ${home.logDir}`,
       done: witness !== null,
     },
   ];
