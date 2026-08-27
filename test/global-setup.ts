@@ -19,7 +19,7 @@
 import { WITNESS_SKIP_REASON, witnessAvailable } from './fixtures/witness-fixture.js';
 
 /** Suites that skip without a witness, by the fragment that identifies them. */
-const AFFECTED = ['witness-attacks', 'repoint', 'throttle', 'showcase'];
+const AFFECTED = ['witness-attacks', 'repoint', 'throttle', 'showcase', 'readme-path'];
 
 /**
  * The suites this run will actually skip.

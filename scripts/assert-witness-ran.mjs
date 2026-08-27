@@ -17,10 +17,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
-const FILE = 'test/witness-attacks.test.ts';
+const FILES = ['test/witness-attacks.test.ts', 'test/readme-path.test.ts'];
+const FILE = FILES[0];
 
 /** The witness attacks -> the suite name that must be seen to pass. */
 const REQUIRED = {
+  // The documented first-run path. It skips without a witness like the rest,
+  // and a skip here means CI stopped checking that a reader of the README can
+  // reach a green banner at all.
+  README: 'reaches a green banner shows a GREEN banner in the interface',
   W1: 'W1: local truncation',
   W2: 'W2: re-seal from genesis and try to re-register',
   W3: 'W3: a substituted witness',
@@ -36,7 +41,7 @@ function fail(lines) {
 // 1. A suite added to the test file but not mapped here would run unchecked,
 //    so the file is parsed rather than trusted. This is the same guard the
 //    attack script applies to SECURITY-REVIEW-R1.md, pointed at the source.
-const src = readFileSync(join(repo, FILE), 'utf8');
+const src = FILES.map((f) => readFileSync(join(repo, f), 'utf8')).join('\n');
 const declared = [...src.matchAll(/witnessSuite\(\s*'(W\d+)[^']*'/g)].map((m) => m[1]);
 const unmapped = [...new Set(declared)].filter((w) => !(w in REQUIRED));
 if (unmapped.length > 0) {
@@ -51,7 +56,7 @@ let report;
 try {
   const raw = execFileSync(
     'npx',
-    ['vitest', 'run', '--reporter=json', FILE],
+    ['vitest', 'run', '--reporter=json', ...FILES],
     { cwd: repo, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] },
   );
   report = JSON.parse(raw.slice(raw.indexOf('{')));
@@ -92,6 +97,7 @@ if (problems.length > 0) {
 }
 
 process.stdout.write(
-  `\nAll ${Object.keys(REQUIRED).length} witness attacks ran and passed ` +
-    `(${results.length} tests, 0 skipped).\n`,
+  `\nAll ${Object.keys(REQUIRED).length} witness-dependent checks ran and passed ` +
+    `— W1-W5 plus the documented first-run path ` +
+    `(${results.length} tests across ${FILES.length} files, 0 skipped).\n`,
 );

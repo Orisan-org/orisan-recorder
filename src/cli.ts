@@ -42,16 +42,24 @@ import { generateSigningKey, loadSigningKey, signingKeyPath } from './checkpoint
  * as "This log has been altered" on a log nobody touched. That is the worst
  * possible failure for this product: a false accusation.
  *
- * Order: an explicit --key wins; then the home key, which is what `start` made;
- * then a key already sitting in the log directory, so logs created by older
- * versions keep working; otherwise the home key path, to be created there.
+ * Order matters, and I got it wrong once: an explicit --key wins; then a key
+ * ALREADY sitting in the log directory, because that is the key those
+ * checkpoints were actually signed with and switching away from it makes a
+ * valid log fail its own signature check; then the home key that `start` made;
+ * otherwise the home path, to be created there.
+ *
+ * Preferring home over an existing local key broke `witness submit` on any log
+ * that had one — the witness rejected the submission with 401, "signature does
+ * not verify against the registered key". Using a key beside the data is a
+ * custody weakness that verify already reports as a finding; it is not licence
+ * to sign with a different key than the log was built with.
  */
 export function defaultSigningKey(dir: string, explicit?: string): string {
   if (explicit !== undefined) return explicit;
-  const home = defaultHome().signingKey;
-  if (existsSync(home)) return home;
   const beside = signingKeyPath(dir);
   if (existsSync(beside)) return beside;
+  const home = defaultHome().signingKey;
+  if (existsSync(home)) return home;
   return home;
 }
 

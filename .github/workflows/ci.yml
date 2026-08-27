@@ -66,11 +66,12 @@ jobs:
         env:
           ORISAN_WITNESS_SRC: ${{ github.workspace }}/.witness/src
 
-      # A green suite does not establish that W1-W5 ran: describe.skip is green.
-      # This fails the build if any of them was skipped, renamed or deleted, and
-      # a skip is exactly what happens when no witness is reachable. Same guard
-      # the confirmed attacks get, for the same reason.
-      - name: W1-W5 actually ran
+      # A green suite does not establish that these ran: describe.skip is green.
+      # This fails the build if any of W1-W5, or the documented first-run path,
+      # was skipped, renamed or deleted — and a skip is exactly what happens
+      # when no witness is reachable. Same guard the confirmed attacks get, for
+      # the same reason.
+      - name: W1-W5 and the documented path actually ran
         run: node scripts/assert-witness-ran.mjs
         env:
           ORISAN_WITNESS_SRC: ${{ github.workspace }}/.witness/src

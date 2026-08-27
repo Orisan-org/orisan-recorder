@@ -20,7 +20,7 @@
  */
 import { existsSync } from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -52,7 +52,35 @@ export interface LiveWitness {
   stop: () => Promise<void>;
 }
 
-export async function startWitness(): Promise<LiveWitness> {
+/**
+ * A non-loopback address this machine answers on, or null.
+ *
+ * verify refuses to count a witness on 127.0.0.1: a witness the operator can
+ * reach over loopback is one the operator controls, so agreement with it proves
+ * only that the log agrees with itself. That rule is correct, and it means a
+ * test that wants to see a GREEN verdict cannot use a loopback witness. Binding
+ * the fixture to the machine's own LAN address gives a witness that is still
+ * entirely local — no external network — but is not loopback.
+ */
+export function nonLoopbackAddress(): string | null {
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === 'IPv4' && !a.internal && !/^127\./.test(a.address)) return a.address;
+    }
+  }
+  return null;
+}
+
+export interface StartWitnessOptions {
+  /**
+   * Serve on all interfaces and advertise the LAN address, so verify does not
+   * discount the witness as loopback. Only for tests that assert a clean
+   * verdict; everything else should stay on 127.0.0.1.
+   */
+  reachable?: boolean;
+}
+
+export async function startWitness(opts: StartWitnessOptions = {}): Promise<LiveWitness> {
   if (!witnessAvailable) {
     // Reached only if a suite forgot to guard itself. Loud, not silent.
     throw new Error(
@@ -94,9 +122,11 @@ export async function startWitness(): Promise<LiveWitness> {
   const db = new WitnessDb(join(dir, 'w.db'));
   const key = loadOrCreateKey(join(dir, 'k.pem'));
   const service = new WitnessService(db, key);
-  const s = await startServer({ service, port: 0, host: '127.0.0.1', log: () => undefined });
+  const lan = opts.reachable === true ? nonLoopbackAddress() : null;
+  const bindHost = lan !== null ? '0.0.0.0' : '127.0.0.1';
+  const s = await startServer({ service, port: 0, host: bindHost, log: () => undefined });
   return {
-    url: `http://127.0.0.1:${s.port}`,
+    url: `http://${lan ?? '127.0.0.1'}:${s.port}`,
     pubkeyPem: service.publicKeyPem,
     dir,
     stop: async () => { await s.close(); db.close(); rmSync(dir, { recursive: true, force: true }); },
