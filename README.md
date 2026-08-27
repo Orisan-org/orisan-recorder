@@ -303,6 +303,28 @@ Where to get the file:
 The anchor records which authority issued it, so a token is always checkable
 against a CA you obtained independently.
 
+**The interface needs it too.** The banner is grey while any check cannot be
+completed, and an unchecked timestamp is one of those, so start the interface
+with the CA or the banner stays grey no matter what else you do:
+
+    orisan-rec start --tsa-ca tsa-ca.pem
+
+If a `tsa-ca.pem` is already sitting in the log directory — `showcase` leaves one
+there — `start` picks it up with no flag.
+
+### Getting to a green banner
+
+Green means every check ran and passed. From a fresh install that is four steps:
+
+    orisan-rec checkpoint <dir>                 # summarise what has been recorded
+    orisan-rec anchor <dir>                     # outside timestamp
+    orisan-rec witness register <dir>           # https://witness.orisan.org
+    orisan-rec witness submit <dir>             # tell it what this log contains
+
+then restart the interface with `--tsa-ca` so the timestamp can be checked.
+`start` does the first step for you on a fresh install. Verified end to end from
+a clean machine: banner **green, "Complete and unaltered"**.
+
 ## The local UI
 
 `orisan-rec ui <dir>` serves http://127.0.0.1:4173 — Agents, Sessions, Timeline,
