@@ -83,6 +83,30 @@ jobs:
       - name: The attacks actually ran
         run: node scripts/assert-attacks-ran.mjs
 
+  # Exactly what someone gets who clones this and follows the README's
+  # Development section: `npm ci && npm test`, nothing else. No build step, no
+  # witness, no environment this repo arranged for itself.
+  #
+  # It exists because that is precisely how the suite broke: test/verify-memory
+  # needs dist/cli.js, `pretest` only built the UI half, and every other job here
+  # runs `npm run build` first — so CI was green while a fresh clone failed on
+  # the documented command. A job that mirrors the workflow cannot catch a hole
+  # in the workflow.
+  #
+  # The witness suites skip here, visibly and by design: a public clone has no
+  # sibling service, and that is the case being reproduced.
+  fresh-clone:
+    name: fresh clone (npm ci && npm test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: npm ci && npm test
+        run: npm ci && npm test
+
   # Reported separately so a reader of the Actions tab sees the answer to
   # "are the attack tests really running" without opening a log.
   attacks:

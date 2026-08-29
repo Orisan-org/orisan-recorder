@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "build:ui": "cd ui && npm ci --silent --no-audit --no-fund && ./node_modules/.bin/vite build",
     "ui": "tsx src/cli.ts ui",
-    "pretest": "npm run build:ui",
+    "pretest": "npm run build",
     "prepack": "npm run build",
     "start": "node dist/cli.js start",
     "bench:tap": "node scripts/bench-tap.mjs"
