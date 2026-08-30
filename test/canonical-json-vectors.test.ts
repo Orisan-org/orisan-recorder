@@ -34,7 +34,26 @@ interface VectorFile {
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/canonical-json-vectors.json', import.meta.url));
 
-const suite = JSON.parse(readFileSync(FIXTURE, 'utf8')) as VectorFile;
+/**
+ * sha256 of the fixture's raw bytes, as generated. Pinned HERE and not in the
+ * fixture, because a checksum a file carries about itself is not a control: an
+ * edit updates both halves and the pair still agrees.
+ *
+ * The vectors are an oracle. Editing one to make a failing test pass inverts
+ * what the test is for — it makes the implementation define correctness instead
+ * of being checked against it. Any hand-repair of the fixture, including one
+ * that only fixes an encoding accident, changes the oracle and must be a
+ * deliberate, reviewed act: regenerate with the generator, then update this pin.
+ */
+const ORACLE_SHA256 = '78e397c9f79788d3ef2c5cadda225d573046e7dce4349826f0c400672160a327';
+const ORACLE_BYTES = 8953;
+
+// Read as BYTES, and hash before parsing. Hashing a re-serialised parse would
+// check a round-trip through this process, not the file on disk.
+const raw = readFileSync(FIXTURE);
+const rawSha256 = createHash('sha256').update(raw).digest('hex');
+
+const suite = JSON.parse(raw.toString('utf8')) as VectorFile;
 const vectors: Vector[] = Array.isArray(suite.vectors) ? suite.vectors : [];
 
 /**
@@ -47,6 +66,24 @@ const MIN_VECTORS = 20;
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 describe('canonical JSON conformance vectors', () => {
+  it('the oracle has not been modified', () => {
+    expect(
+      rawSha256,
+      `THE ORACLE WAS MODIFIED.\n` +
+        `  test/fixtures/canonical-json-vectors.json no longer matches its pinned sha256.\n` +
+        `  expected ${ORACLE_SHA256} (${ORACLE_BYTES} bytes)\n` +
+        `  actual   ${rawSha256} (${raw.length} bytes)\n` +
+        `\n` +
+        `  These vectors are the oracle this implementation is checked against.\n` +
+        `  If a vector fails, the finding is about canonicalJson() or about the\n` +
+        `  vector's provenance — it is never fixed by editing the fixture, which\n` +
+        `  would make the implementation define its own correctness.\n` +
+        `  To change the vectors legitimately: regenerate with the generator, then\n` +
+        `  update ORACLE_SHA256 and ORACLE_BYTES in this file as a reviewed change.`,
+    ).toBe(ORACLE_SHA256);
+    expect(raw.length).toBe(ORACLE_BYTES);
+  });
+
   it('loads a fixture that actually contains vectors', () => {
     expect(suite.spec).toBe('orisan-canonical-json');
     expect(vectors.length).toBeGreaterThanOrEqual(MIN_VECTORS);
