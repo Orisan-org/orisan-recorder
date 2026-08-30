@@ -8,7 +8,7 @@
     "Go: json.Encoder.SetEscapeHTML(false) is required.",
     "Python: json.dumps(ensure_ascii=False, separators=(',',':'), sort_keys=...) with a UTF-16-aware key sort.",
     "TypeScript: build the sorted object with Object.create(null).",
-    "Floats are rejected at the input boundary; hashed fields are integers only."
+    "canonicalJson COERCES non-finite and non-integer numbers rather than rejecting them - see the `coercions` array for the exact output of each. Nothing in schema.ts throws on them."
   ],
   "vectors": [
     {
@@ -234,6 +234,58 @@
       },
       "canonical_json": "{\"actor\":{\"agent_id\":\"spiffe://orisan/agent/claude-code\",\"human\":\"rakesh\",\"tool\":\"claude-code\"},\"args_digest\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"clock_source\":\"host_wall_clock\",\"duration_ms\":17,\"event_id\":\"018f3a2b-7c4d-7e8f-9a0b-1c2d3e4f5a6b\",\"kind\":\"tool_call\",\"outcome\":\"ok\",\"payload_ref\":null,\"prev_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seq\":42,\"session_id\":\"sess-01H\",\"target\":\"filesystem/read_file\",\"ts\":\"2026-08-29T14:23:45.123Z\",\"v\":3}",
       "sha256": "41add07c5b2f2ec5ffed76c40836d0cb35a87d1185b5fc796d2398fd1ccaf228"
+    },
+    {
+      "name": "lone_surrogate",
+      "why": "An unpaired UTF-16 code unit. JSON.stringify has been well-formed since ES2019: it emits a lone surrogate as a \\udXXX escape, lowercase, rather than producing unencodable output. A port that passes the string through raw emits invalid UTF-8; one that substitutes U+FFFD changes the bytes and therefore the hash.",
+      "input": {
+        "s": "\ud800"
+      },
+      "canonical_json": "{\"s\":\"\\ud800\"}",
+      "sha256": "d06a70a1ca4d3ac4099cd5f35ecbb551be652247e0950c05790e8f0c58010851"
+    },
+    {
+      "name": "lone_surrogate_key",
+      "why": "The same unpaired unit as an object KEY, beside an astral key and an ASCII one, so UTF-16 ordering is exercised on a code unit that is not part of a pair. Sorting by code POINT has to decode, and a lone surrogate has no code point to decode to; sorting by UTF-8 byte cannot encode it at all. Only a code-unit sort orders these three the way JS does: a, then U+D800, then U+1F510 (whose first unit is U+D83D).",
+      "input": {
+        "\ud800": 1,
+        "🔐": 2,
+        "a": 3
+      },
+      "canonical_json": "{\"a\":3,\"\\ud800\":1,\"🔐\":2}",
+      "sha256": "5b3d49a799221798b039a2fbd69ab7135f6a2b64efcc5da1e85df6ce66e5e59d"
+    }
+  ],
+  "coercions": [
+    {
+      "name": "nan",
+      "build": "NaN",
+      "emits": "null",
+      "why": "JSON.stringify(NaN) is \"null\". Nothing throws, so a NaN reaching a hashed field is indistinguishable from a null one: argsDigest({n:NaN}) and argsDigest({n:null}) are the same digest. Unreachable from JSON.parse, which is why SECURITY-REVIEW-R1 rules it out as a collision, but reachable from any in-language caller."
+    },
+    {
+      "name": "infinity",
+      "build": "Infinity",
+      "emits": "null",
+      "why": "JSON.stringify(Infinity) is \"null\", same collapse as NaN."
+    },
+    {
+      "name": "negative_infinity",
+      "build": "-Infinity",
+      "emits": "null",
+      "why": "JSON.stringify(-Infinity) is \"null\"; the sign is lost too."
+    },
+    {
+      "name": "negative_zero",
+      "build": "-0",
+      "emits": "0",
+      "why": "-0 is here because JSON.stringify(-0) emits \"0\" while Python emits \"-0.0\": a silent cross-language divergence, which is exactly why floats are rejected rather than serialized. Note the rejecting is done by THIS GENERATOR (_ser raises on float), not by canonicalJson, which emits \"0\" and moves on. RFC 8785 also canonicalises -0 to 0, so the reference behaviour is defensible - it is the unstated asymmetry between the two implementations that bites."
+    },
+    {
+      "name": "float",
+      "build": "float",
+      "emits": "1.5",
+      "why": "The double 1.5. This generator raises ValueError on any float, so no float can appear in `vectors` above; canonicalJson serialises it happily. A port that mirrors this generator's strictness will reject inputs the reference accepts."
     }
   ]
 }
