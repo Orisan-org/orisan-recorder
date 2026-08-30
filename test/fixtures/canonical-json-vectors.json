@@ -1,0 +1,291 @@
+{
+  "spec": "orisan-canonical-json",
+  "spec_version": "0.1",
+  "reference": "orisan-recorder/src/schema.ts canonicalJson()",
+  "hash": "sha256 of the UTF-8 bytes of canonical_json",
+  "notes": [
+    "Object keys sort by UTF-16 code unit (JS semantics), not code point.",
+    "Go: json.Encoder.SetEscapeHTML(false) is required.",
+    "Python: json.dumps(ensure_ascii=False, separators=(',',':'), sort_keys=...) with a UTF-16-aware key sort.",
+    "TypeScript: build the sorted object with Object.create(null).",
+    "canonicalJson COERCES non-finite and non-integer numbers rather than rejecting them - see the `coercions` array for the exact output of each. Nothing in schema.ts throws on them."
+  ],
+  "vectors": [
+    {
+      "name": "empty_object",
+      "why": "baseline",
+      "input": {},
+      "canonical_json": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "empty_array",
+      "why": "baseline",
+      "input": [],
+      "canonical_json": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "key_sorting_basic",
+      "why": "keys must be reordered, not preserved in insertion order",
+      "input": {
+        "z": 1,
+        "a": 2,
+        "m": 3
+      },
+      "canonical_json": "{\"a\":2,\"m\":3,\"z\":1}",
+      "sha256": "ebba85cfdc0a724b6cc327ecc545faeb38b9fe02eca603b430eb872f5cf75370"
+    },
+    {
+      "name": "proto_key",
+      "why": "TS: a normal object literal makes __proto__ hit Object.prototype's setter, no own property is created, and the key VANISHES from the canonical string while surviving in the file. Content could be parked in an anchored event uncommitted by the hash. Object.create(null) is mandatory.",
+      "input": {
+        "a": 1,
+        "__proto__": {
+          "evil": true
+        }
+      },
+      "canonical_json": "{\"__proto__\":{\"evil\":true},\"a\":1}",
+      "sha256": "0e7ca8c767d53a068185c84340ca282be8950b5d24185d5d8ac7b474115618ec"
+    },
+    {
+      "name": "constructor_key",
+      "why": "same class of prototype-pollution hazard as __proto__",
+      "input": {
+        "constructor": "x",
+        "b": 2
+      },
+      "canonical_json": "{\"b\":2,\"constructor\":\"x\"}",
+      "sha256": "80cf29100dc640dbb4080fd3ddd011b6ad87071a25d94eeb3c6a6bc225e47211"
+    },
+    {
+      "name": "html_chars",
+      "why": "Go's encoding/json escapes < > & by default as \\u003c etc. SetEscapeHTML(false) is REQUIRED or Go diverges from TS.",
+      "input": {
+        "html": "<script>a && b</script>"
+      },
+      "canonical_json": "{\"html\":\"<script>a && b</script>\"}",
+      "sha256": "19dab6358ca68208afc2c6761af0fc374a7e16cdcc2adfd2eb64511fbac4e18a"
+    },
+    {
+      "name": "non_ascii",
+      "why": "Python's json.dumps defaults to ensure_ascii=True and escapes all non-ASCII. ensure_ascii=False is REQUIRED.",
+      "input": {
+        "text": "café ☕ naïve Ünicode"
+      },
+      "canonical_json": "{\"text\":\"café ☕ naïve Ünicode\"}",
+      "sha256": "d9638b61fe6477f150b001d6ebdb08a3325e052743d8bf9b974045b0dd20974f"
+    },
+    {
+      "name": "cjk",
+      "why": "multi-byte UTF-8, no escaping in TS",
+      "input": {
+        "name": "日本語テスト"
+      },
+      "canonical_json": "{\"name\":\"日本語テスト\"}",
+      "sha256": "2c681d6bfaa5296515585355cf5b048c6d74eaf2d4fb379cad0ab12f3dc59e71"
+    },
+    {
+      "name": "emoji_surrogate_pair",
+      "why": "Outside the BMP. JS strings are UTF-16 so this is a surrogate pair; affects both encoding and key ordering.",
+      "input": {
+        "emoji": "🔐 secure 👍"
+      },
+      "canonical_json": "{\"emoji\":\"🔐 secure 👍\"}",
+      "sha256": "c5d1a5b9f478188e86f9087306b0bdcead5b929e0692010fa62b458cc73052f0"
+    },
+    {
+      "name": "key_sorting_astral",
+      "why": "THE ordering trap. JS sorts by UTF-16 code unit, Python by code point, Go by UTF-8 byte. An astral-plane key sorts DIFFERENTLY under JS than under a naive port, producing a different canonical string and a different hash.",
+      "input": {
+        "🔐": 1,
+        "￿": 2,
+        "a": 3
+      },
+      "canonical_json": "{\"a\":3,\"🔐\":1,\"￿\":2}",
+      "sha256": "212e0504156b6a6a97e73a0a276a0107016d7be8cc789bdedd2223bd682b3b7f"
+    },
+    {
+      "name": "control_characters",
+      "why": "short escapes (\\n \\t) vs \\u00XX form must match exactly",
+      "input": {
+        "s": "line1\nline2\ttabbed\r\nend\bx\fy"
+      },
+      "canonical_json": "{\"s\":\"line1\\nline2\\ttabbed\\r\\nend\\bx\\fy\"}",
+      "sha256": "4072aeabc14e0b1a911980baffc497294d3e881cb95e07aec0c0313047e3c321"
+    },
+    {
+      "name": "control_char_low",
+      "why": "sub-0x20 characters with no short form use lowercase \\u00xx",
+      "input": {
+        "s": "\u0000\u0001\u001f"
+      },
+      "canonical_json": "{\"s\":\"\\u0000\\u0001\\u001f\"}",
+      "sha256": "3c7d87189d5a604ed61a69a4d9596d6b19faf6a347bd719d02e8948b1cadf24b"
+    },
+    {
+      "name": "quotes_and_backslashes",
+      "why": "escaping order errors double-escape",
+      "input": {
+        "s": "he said \"hi\" \\ then left"
+      },
+      "canonical_json": "{\"s\":\"he said \\\"hi\\\" \\\\ then left\"}",
+      "sha256": "22ac8241bc578b152082f685d9f0878f7f5857ee3a8f4ec22bfbec7378d522b1"
+    },
+    {
+      "name": "solidus_not_escaped",
+      "why": "JSON permits \\/ but JSON.stringify does NOT escape it",
+      "input": {
+        "path": "a/b/c"
+      },
+      "canonical_json": "{\"path\":\"a/b/c\"}",
+      "sha256": "b0bb36063beff86f9be05d097c2aa7a0f9f3145b982d3650bd75549cdc4fd7a1"
+    },
+    {
+      "name": "nested_deep",
+      "why": "recursion must sort at every level, not just the root",
+      "input": {
+        "b": {
+          "z": 1,
+          "a": {
+            "y": 2,
+            "b": [
+              {
+                "q": 1,
+                "p": 2
+              }
+            ]
+          }
+        },
+        "a": 1
+      },
+      "canonical_json": "{\"a\":1,\"b\":{\"a\":{\"b\":[{\"p\":2,\"q\":1}],\"y\":2},\"z\":1}}",
+      "sha256": "c38b1ec37be2bbc35444a9f47b4249fd652d2a06bbe9b2bd1019406497b1e151"
+    },
+    {
+      "name": "array_order_preserved",
+      "why": "arrays must NOT be sorted; order is semantic",
+      "input": {
+        "list": [
+          3,
+          1,
+          2,
+          "z",
+          "a"
+        ]
+      },
+      "canonical_json": "{\"list\":[3,1,2,\"z\",\"a\"]}",
+      "sha256": "ca50996d66b399f1371737ba5f75ec10f248c66238fe4b261f0ecd00d5518ed8"
+    },
+    {
+      "name": "nulls_and_bools",
+      "why": "literal spelling",
+      "input": {
+        "n": null,
+        "t": true,
+        "f": false
+      },
+      "canonical_json": "{\"f\":false,\"n\":null,\"t\":true}",
+      "sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+    },
+    {
+      "name": "integers",
+      "why": "no float formatting divergence; large ints must not gain exponents",
+      "input": {
+        "zero": 0,
+        "neg": -42,
+        "big": 9007199254740991
+      },
+      "canonical_json": "{\"big\":9007199254740991,\"neg\":-42,\"zero\":0}",
+      "sha256": "2c94976a5419a37e61093c89e04772ce50c87ba9dfc421685a394a6a39dc54c9"
+    },
+    {
+      "name": "empty_string_key",
+      "why": "empty key is legal and sorts first",
+      "input": {
+        "": 1,
+        "a": 2
+      },
+      "canonical_json": "{\"\":1,\"a\":2}",
+      "sha256": "9cf535828d5dbc2d87d9c4c0b99d9e7308b5fdbd22aac02bac1d60f6ac9aa127"
+    },
+    {
+      "name": "realistic_event_v3",
+      "why": "a full RecordedEvent shape, hash field excluded from its own input",
+      "input": {
+        "v": 3,
+        "seq": 42,
+        "event_id": "018f3a2b-7c4d-7e8f-9a0b-1c2d3e4f5a6b",
+        "session_id": "sess-01H",
+        "ts": "2026-08-29T14:23:45.123Z",
+        "clock_source": "host_wall_clock",
+        "actor": {
+          "human": "rakesh",
+          "agent_id": "spiffe://orisan/agent/claude-code",
+          "tool": "claude-code"
+        },
+        "kind": "tool_call",
+        "target": "filesystem/read_file",
+        "args_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "payload_ref": null,
+        "outcome": "ok",
+        "duration_ms": 17,
+        "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "canonical_json": "{\"actor\":{\"agent_id\":\"spiffe://orisan/agent/claude-code\",\"human\":\"rakesh\",\"tool\":\"claude-code\"},\"args_digest\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"clock_source\":\"host_wall_clock\",\"duration_ms\":17,\"event_id\":\"018f3a2b-7c4d-7e8f-9a0b-1c2d3e4f5a6b\",\"kind\":\"tool_call\",\"outcome\":\"ok\",\"payload_ref\":null,\"prev_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seq\":42,\"session_id\":\"sess-01H\",\"target\":\"filesystem/read_file\",\"ts\":\"2026-08-29T14:23:45.123Z\",\"v\":3}",
+      "sha256": "41add07c5b2f2ec5ffed76c40836d0cb35a87d1185b5fc796d2398fd1ccaf228"
+    },
+    {
+      "name": "lone_surrogate",
+      "why": "An unpaired UTF-16 code unit. JSON.stringify has been well-formed since ES2019: it emits a lone surrogate as a \\udXXX escape, lowercase, rather than producing unencodable output. A port that passes the string through raw emits invalid UTF-8; one that substitutes U+FFFD changes the bytes and therefore the hash.",
+      "input": {
+        "s": "\ud800"
+      },
+      "canonical_json": "{\"s\":\"\\ud800\"}",
+      "sha256": "d06a70a1ca4d3ac4099cd5f35ecbb551be652247e0950c05790e8f0c58010851"
+    },
+    {
+      "name": "lone_surrogate_key",
+      "why": "The same unpaired unit as an object KEY, beside an astral key and an ASCII one, so UTF-16 ordering is exercised on a code unit that is not part of a pair. Sorting by code POINT has to decode, and a lone surrogate has no code point to decode to; sorting by UTF-8 byte cannot encode it at all. Only a code-unit sort orders these three the way JS does: a, then U+D800, then U+1F510 (whose first unit is U+D83D).",
+      "input": {
+        "\ud800": 1,
+        "🔐": 2,
+        "a": 3
+      },
+      "canonical_json": "{\"a\":3,\"\\ud800\":1,\"🔐\":2}",
+      "sha256": "5b3d49a799221798b039a2fbd69ab7135f6a2b64efcc5da1e85df6ce66e5e59d"
+    }
+  ],
+  "coercions": [
+    {
+      "name": "nan",
+      "build": "NaN",
+      "emits": "null",
+      "why": "JSON.stringify(NaN) is \"null\". Nothing throws, so a NaN reaching a hashed field is indistinguishable from a null one: argsDigest({n:NaN}) and argsDigest({n:null}) are the same digest. Unreachable from JSON.parse, which is why SECURITY-REVIEW-R1 rules it out as a collision, but reachable from any in-language caller."
+    },
+    {
+      "name": "infinity",
+      "build": "Infinity",
+      "emits": "null",
+      "why": "JSON.stringify(Infinity) is \"null\", same collapse as NaN."
+    },
+    {
+      "name": "negative_infinity",
+      "build": "-Infinity",
+      "emits": "null",
+      "why": "JSON.stringify(-Infinity) is \"null\"; the sign is lost too."
+    },
+    {
+      "name": "negative_zero",
+      "build": "-0",
+      "emits": "0",
+      "why": "-0 is here because JSON.stringify(-0) emits \"0\" while Python emits \"-0.0\": a silent cross-language divergence, which is exactly why floats are rejected rather than serialized. Note the rejecting is done by THIS GENERATOR (_ser raises on float), not by canonicalJson, which emits \"0\" and moves on. RFC 8785 also canonicalises -0 to 0, so the reference behaviour is defensible - it is the unstated asymmetry between the two implementations that bites."
+    },
+    {
+      "name": "float",
+      "build": "float",
+      "emits": "1.5",
+      "why": "The double 1.5. This generator raises ValueError on any float, so no float can appear in `vectors` above; canonicalJson serialises it happily. A port that mirrors this generator's strictness will reject inputs the reference accepts."
+    }
+  ]
+}
