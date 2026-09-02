@@ -9,3 +9,9 @@ ui/dist/
 
 # CI checks the witness service out here to run W1-W5.
 .witness/
+
+# Secrets.
+.env
+.env.*
+*.pem
+*.key
