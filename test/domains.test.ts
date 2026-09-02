@@ -31,6 +31,7 @@ const THIRD_PARTY: { domain: string; why: string }[] = [
   { domain: 'nodejs.org', why: 'told to the user by install.sh when Node is missing' },
   { domain: 'api.anthropic.com', why: 'example upstream in the tap docs; supplied by the user' },
   { domain: 'api.openai.com', why: 'example upstream in the tap docs; supplied by the user' },
+  { domain: 'www.apache.org', why: 'boilerplate URL inside the unmodified Apache-2.0 LICENSE text' },
 ];
 
 /** Addresses that can never leave the machine or resolve at all. */
